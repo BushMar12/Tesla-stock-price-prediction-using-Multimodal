@@ -117,7 +117,14 @@ class Trainer:
         device: torch.device = None,
         learning_rate: float = TRAINING_CONFIG['learning_rate']
     ):
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if device:
+            self.device = device
+        elif torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+        else:
+            self.device = torch.device('cpu')
         self.model = model.to(self.device)
         
         self.optimizer = optim.AdamW(
@@ -130,8 +137,7 @@ class Trainer:
             self.optimizer,
             mode='min',
             factor=0.5,
-            patience=5,
-            verbose=True
+            patience=5
         )
         
         self.criterion = CombinedLoss()
@@ -185,8 +191,15 @@ class Trainer:
         }
     
     @torch.no_grad()
-    def evaluate(self, dataloader: DataLoader) -> dict:
-        """Evaluate the model"""
+    def evaluate(self, dataloader: DataLoader, return_scaler=None, close_prices=None) -> dict:
+        """
+        Evaluate the model.
+        
+        Args:
+            dataloader: DataLoader with evaluation data
+            return_scaler: Scaler to inverse transform returns
+            close_prices: Close prices for reconstructing predicted prices
+        """
         self.model.eval()
         
         total_loss = 0
@@ -224,11 +237,41 @@ class Trainer:
         n_batches = len(dataloader)
         accuracy = correct / total
         
-        # Calculate RMSE
-        predictions = np.array(all_predictions)
-        targets = np.array(all_targets)
-        rmse = np.sqrt(np.mean((predictions - targets) ** 2))
-        mae = np.mean(np.abs(predictions - targets))
+        # Convert to arrays
+        predictions_scaled = np.array(all_predictions)
+        targets_scaled = np.array(all_targets)
+        
+        # Inverse transform to actual returns if scaler provided
+        if return_scaler is not None:
+            pred_returns = return_scaler.inverse_transform(predictions_scaled.reshape(-1, 1)).flatten()
+            actual_returns = return_scaler.inverse_transform(targets_scaled.reshape(-1, 1)).flatten()
+        else:
+            pred_returns = predictions_scaled
+            actual_returns = targets_scaled
+        
+        # Reconstruct prices if close_prices provided
+        if close_prices is not None:
+            # Handle length mismatch (close_prices should match predictions length)
+            if len(close_prices) != len(pred_returns):
+                print(f"Warning: close_prices length ({len(close_prices)}) != predictions length ({len(pred_returns)})")
+                # Truncate or use available data
+                min_len = min(len(close_prices), len(pred_returns))
+                close_prices = close_prices[:min_len]
+                pred_returns = pred_returns[:min_len]
+                actual_returns = actual_returns[:min_len]
+            
+            pred_prices = close_prices * (1 + pred_returns)
+            actual_prices = close_prices * (1 + actual_returns)
+            
+            # Calculate metrics on actual price scale
+            rmse = np.sqrt(np.mean((pred_prices - actual_prices) ** 2))
+            mae = np.mean(np.abs(pred_prices - actual_prices))
+            mape = np.mean(np.abs((actual_prices - pred_prices) / actual_prices)) * 100
+        else:
+            # Fallback: metrics on returns (not scaled)
+            rmse = np.sqrt(np.mean((pred_returns - actual_returns) ** 2))
+            mae = np.mean(np.abs(pred_returns - actual_returns))
+            mape = None
         
         return {
             'loss': total_loss / n_batches,
@@ -236,7 +279,8 @@ class Trainer:
             'cls_loss': total_cls_loss / n_batches,
             'accuracy': accuracy,
             'rmse': rmse,
-            'mae': mae
+            'mae': mae,
+            'mape': mape
         }
     
     def fit(
@@ -344,12 +388,13 @@ class Trainer:
         print(f"Model loaded from {path}")
 
 
-def train_model(splits: dict) -> tuple:
+def train_model(splits: dict, return_scaler=None) -> tuple:
     """
     Train the multimodal model.
     
     Args:
         splits: Dict with train/val/test data splits
+        return_scaler: Scaler for inverse transforming returns to actual values
     
     Returns:
         Tuple of (trained model, trainer, history)
@@ -390,13 +435,32 @@ def train_model(splits: dict) -> tuple:
     )
     test_loader = DataLoader(test_dataset, batch_size=TRAINING_CONFIG['batch_size'])
     
-    test_metrics = trainer.evaluate(test_loader)
+    # Get close prices for reconstruction if available
+    close_prices = splits['test'].get('close_prices', None)
+    
+    # Debug: check if close_prices exists
+    if close_prices is not None:
+        print(f"Close prices available: {len(close_prices)} samples, range: ${close_prices.min():.2f} - ${close_prices.max():.2f}")
+    else:
+        print("Warning: close_prices not found in splits['test']")
+    
+    if return_scaler is not None:
+        print(f"Return scaler data range: [{return_scaler.data_min_[0]:.4f}, {return_scaler.data_max_[0]:.4f}]")
+    
+    test_metrics = trainer.evaluate(
+        test_loader, 
+        return_scaler=return_scaler,
+        close_prices=close_prices
+    )
+    
     print("\n" + "=" * 50)
     print("Test Set Results:")
     print(f"  Loss: {test_metrics['loss']:.4f}")
-    print(f"  RMSE: {test_metrics['rmse']:.2f}")
-    print(f"  MAE: {test_metrics['mae']:.2f}")
-    print(f"  Direction Accuracy: {test_metrics['accuracy']:.4f}")
+    print(f"  RMSE: ${test_metrics['rmse']:.2f}")
+    print(f"  MAE: ${test_metrics['mae']:.2f}")
+    if 'mape' in test_metrics and test_metrics['mape'] is not None:
+        print(f"  MAPE: {test_metrics['mape']:.2f}%")
+    print(f"  Direction Accuracy: {test_metrics['accuracy']*100:.1f}%")
     print("=" * 50)
     
     return model, trainer, history
@@ -405,7 +469,7 @@ def train_model(splits: dict) -> tuple:
 if __name__ == "__main__":
     # Test with dummy data
     n_samples = 500
-    seq_len = 60
+    seq_len = 20
     ts_features = 50
     sentiment_features = 8
     

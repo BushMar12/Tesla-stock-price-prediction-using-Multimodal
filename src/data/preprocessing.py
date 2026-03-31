@@ -21,7 +21,7 @@ class DataPreprocessor:
     def __init__(self, sequence_length: int = SEQUENCE_LENGTH):
         self.sequence_length = sequence_length
         self.feature_scaler = StandardScaler()
-        self.price_scaler = MinMaxScaler()
+        self.return_scaler = MinMaxScaler()  # For scaling target returns
         self.feature_columns = None
         self.sentiment_columns = None
         
@@ -113,12 +113,12 @@ class DataPreprocessor:
         # Fit feature scaler
         self.feature_scaler.fit(df[all_features])
         
-        # Fit price scaler on close prices
-        self.price_scaler.fit(df[['close']])
+        # Fit return scaler on target returns
+        self.return_scaler.fit(df[['Target_Return']])
         
         # Save scalers
         joblib.dump(self.feature_scaler, MODELS_DIR / 'feature_scaler.pkl')
-        joblib.dump(self.price_scaler, MODELS_DIR / 'price_scaler.pkl')
+        joblib.dump(self.return_scaler, MODELS_DIR / 'return_scaler.pkl')
         
         print("Scalers fitted and saved")
     
@@ -129,12 +129,16 @@ class DataPreprocessor:
         all_features = self.feature_columns + self.sentiment_columns
         df[all_features] = self.feature_scaler.transform(df[all_features])
         
+        # Scale target returns to [0, 1] range for better training
+        df['Target_Return_Scaled'] = self.return_scaler.transform(df[['Target_Return']].values)
+        
         return df
     
     def create_sequences(
         self,
         df: pd.DataFrame,
-        target_col: str = 'Target_Price'
+        target_col: str = 'Target_Return_Scaled',
+        original_close_prices: np.ndarray = None
     ) -> tuple:
         """
         Create sequences for time-series modeling.
@@ -142,22 +146,31 @@ class DataPreprocessor:
         Args:
             df: Preprocessed DataFrame
             target_col: Target column name
+            original_close_prices: Original (unscaled) close prices for price reconstruction
         
         Returns:
-            Tuple of (X_price, X_sentiment, y_regression, y_classification, dates)
+            Tuple of (X_price, X_sentiment, y_regression, y_classification, dates, close_prices)
         """
         all_features = self.feature_columns + self.sentiment_columns
         
         X_all = df[all_features].values
-        y_reg = df['Target_Price'].values
+        # Use scaled target returns for training
+        y_reg = df['Target_Return_Scaled'].values
         y_cls = df['Target_Direction'].values
         dates = df['date'].values
+        
+        # Use original (unscaled) close prices if provided, otherwise use df['close']
+        if original_close_prices is not None:
+            close_prices = original_close_prices
+        else:
+            close_prices = df['close'].values
         
         X_price_sequences = []
         X_sentiment_sequences = []
         y_regression = []
         y_classification = []
         sequence_dates = []
+        sequence_close_prices = []  # Today's close price for each sequence
         
         n_price_features = len(self.feature_columns)
         n_sentiment_features = len(self.sentiment_columns)
@@ -173,6 +186,7 @@ class DataPreprocessor:
             y_regression.append(y_reg[i])
             y_classification.append(y_cls[i])
             sequence_dates.append(dates[i])
+            sequence_close_prices.append(close_prices[i])  # Today's actual close
         
         X_price = np.array(X_price_sequences)
         X_sentiment = np.array(X_sentiment_sequences) if X_sentiment_sequences else None
@@ -182,7 +196,8 @@ class DataPreprocessor:
             X_sentiment,
             np.array(y_regression),
             np.array(y_classification),
-            np.array(sequence_dates)
+            np.array(sequence_dates),
+            np.array(sequence_close_prices)
         )
     
     def split_data(
@@ -191,7 +206,8 @@ class DataPreprocessor:
         X_sentiment: np.ndarray,
         y_reg: np.ndarray,
         y_cls: np.ndarray,
-        dates: np.ndarray
+        dates: np.ndarray,
+        close_prices: np.ndarray
     ) -> dict:
         """
         Split data into train/val/test sets (time-based).
@@ -209,21 +225,24 @@ class DataPreprocessor:
                 'X_sentiment': X_sentiment[:train_end] if X_sentiment is not None else None,
                 'y_reg': y_reg[:train_end],
                 'y_cls': y_cls[:train_end],
-                'dates': dates[:train_end]
+                'dates': dates[:train_end],
+                'close_prices': close_prices[:train_end]
             },
             'val': {
                 'X_price': X_price[train_end:val_end],
                 'X_sentiment': X_sentiment[train_end:val_end] if X_sentiment is not None else None,
                 'y_reg': y_reg[train_end:val_end],
                 'y_cls': y_cls[train_end:val_end],
-                'dates': dates[train_end:val_end]
+                'dates': dates[train_end:val_end],
+                'close_prices': close_prices[train_end:val_end]
             },
             'test': {
                 'X_price': X_price[val_end:],
                 'X_sentiment': X_sentiment[val_end:] if X_sentiment is not None else None,
                 'y_reg': y_reg[val_end:],
                 'y_cls': y_cls[val_end:],
-                'dates': dates[val_end:]
+                'dates': dates[val_end:],
+                'close_prices': close_prices[val_end:]
             }
         }
         
@@ -256,17 +275,22 @@ class DataPreprocessor:
         # Clean data
         df = self.clean_data(df)
         
+        # Save original close prices BEFORE scaling (for price reconstruction)
+        original_close_prices = df['close'].values.copy()
+        
         # Fit scalers on all data (before splitting for consistent scaling)
         self.fit_scalers(df)
         
-        # Transform features
+        # Transform features (this scales 'close' column)
         df = self.transform_features(df)
         
-        # Create sequences
-        X_price, X_sentiment, y_reg, y_cls, dates = self.create_sequences(df)
+        # Create sequences, passing original close prices
+        X_price, X_sentiment, y_reg, y_cls, dates, close_prices = self.create_sequences(
+            df, original_close_prices=original_close_prices
+        )
         
         # Split data
-        splits = self.split_data(X_price, X_sentiment, y_reg, y_cls, dates)
+        splits = self.split_data(X_price, X_sentiment, y_reg, y_cls, dates, close_prices)
         
         # Save metadata
         metadata = {

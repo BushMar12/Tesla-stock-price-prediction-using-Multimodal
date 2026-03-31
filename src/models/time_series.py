@@ -187,7 +187,7 @@ class GRUEncoder(nn.Module):
 if __name__ == "__main__":
     # Test the encoder
     batch_size = 32
-    seq_len = 60
+    seq_len = 20
     input_size = 50
     
     model = TimeSeriesEncoder(input_size=input_size)

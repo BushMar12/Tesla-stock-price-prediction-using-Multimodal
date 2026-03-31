@@ -78,22 +78,27 @@ class TemporalSentimentEncoder(nn.Module):
         
         self.input_size = input_size
         self.hidden_dim = hidden_dim
+        self.n_kernels = len(kernel_sizes)
+        
+        # Calculate output size per conv to ensure total matches hidden_dim
+        self.conv_out_dim = hidden_dim // self.n_kernels
+        self.total_conv_out = self.conv_out_dim * self.n_kernels
         
         # Multiple CNN paths for different receptive fields
         self.convs = nn.ModuleList([
             nn.Sequential(
-                nn.Conv1d(input_size, hidden_dim // len(kernel_sizes), 
+                nn.Conv1d(input_size, self.conv_out_dim, 
                          kernel_size=k, padding=k//2),
-                nn.BatchNorm1d(hidden_dim // len(kernel_sizes)),
+                nn.BatchNorm1d(self.conv_out_dim),
                 nn.ReLU(),
                 nn.Dropout(dropout)
             )
             for k in kernel_sizes
         ])
         
-        # Combine CNN outputs
+        # Combine CNN outputs - input size is total_conv_out, not hidden_dim
         self.combine = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(self.total_conv_out, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout)

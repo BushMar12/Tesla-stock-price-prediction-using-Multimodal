@@ -1,0 +1,497 @@
+"""
+Standalone regression models: LSTM, GRU, and XGBoost for stock price prediction
+"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from config import MODEL_CONFIG
+
+
+class LSTMRegressor(nn.Module):
+    """LSTM-based regression model for price prediction"""
+    
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int = 128,
+        num_layers: int = 2,
+        dropout: float = 0.2,
+        bidirectional: bool = True
+    ):
+        super().__init__()
+        
+        self.model_name = "LSTM"
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if bidirectional else 1
+        
+        # Input projection
+        self.input_projection = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # LSTM layers
+        self.lstm = nn.LSTM(
+            input_size=hidden_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional
+        )
+        
+        # Output layers
+        lstm_output_size = hidden_size * self.num_directions
+        self.fc = nn.Sequential(
+            nn.Linear(lstm_output_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 1)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Project input
+        x = self.input_projection(x)
+        
+        # LSTM
+        lstm_out, (h_n, c_n) = self.lstm(x)
+        
+        # Use last output
+        if self.bidirectional:
+            last_out = torch.cat([lstm_out[:, -1, :self.hidden_size], 
+                                  lstm_out[:, 0, self.hidden_size:]], dim=1)
+        else:
+            last_out = lstm_out[:, -1, :]
+        
+        # Predict
+        return self.fc(last_out).squeeze(-1)
+
+
+class GRURegressor(nn.Module):
+    """GRU-based regression model for price prediction"""
+    
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int = 128,
+        num_layers: int = 2,
+        dropout: float = 0.2,
+        bidirectional: bool = True
+    ):
+        super().__init__()
+        
+        self.model_name = "GRU"
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if bidirectional else 1
+        
+        # Input projection
+        self.input_projection = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # GRU layers
+        self.gru = nn.GRU(
+            input_size=hidden_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional
+        )
+        
+        # Output layers
+        gru_output_size = hidden_size * self.num_directions
+        self.fc = nn.Sequential(
+            nn.Linear(gru_output_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 1)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Project input
+        x = self.input_projection(x)
+        
+        # GRU
+        gru_out, h_n = self.gru(x)
+        
+        # Use last output
+        if self.bidirectional:
+            last_out = torch.cat([gru_out[:, -1, :self.hidden_size], 
+                                  gru_out[:, 0, self.hidden_size:]], dim=1)
+        else:
+            last_out = gru_out[:, -1, :]
+        
+        # Predict
+        return self.fc(last_out).squeeze(-1)
+
+
+class XGBoostRegressor:
+    """XGBoost-based regression model for price prediction"""
+    
+    def __init__(self, **kwargs):
+        self.model_name = "XGBoost"
+        self.model = None
+        self.params = {
+            'n_estimators': kwargs.get('n_estimators', 100),
+            'max_depth': kwargs.get('max_depth', 6),
+            'learning_rate': kwargs.get('learning_rate', 0.1),
+            'subsample': kwargs.get('subsample', 0.8),
+            'random_state': 42
+        }
+    
+    def fit(self, X: np.ndarray, y: np.ndarray):
+        """Train the XGBoost model"""
+        from sklearn.ensemble import GradientBoostingRegressor
+        
+        # Flatten sequences for XGBoost: (batch, seq, features) -> (batch, seq*features)
+        if len(X.shape) == 3:
+            X = X.reshape(X.shape[0], -1)
+        
+        self.model = GradientBoostingRegressor(**self.params)
+        self.model.fit(X, y)
+        return self
+    
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Make predictions"""
+        if len(X.shape) == 3:
+            X = X.reshape(X.shape[0], -1)
+        return self.model.predict(X)
+    
+    def __call__(self, X: np.ndarray) -> np.ndarray:
+        """Make predictions (for compatibility with PyTorch models)"""
+        return self.predict(X)
+
+
+class MultiModelRegressor:
+    """Wrapper to train and compare multiple regression models"""
+    
+    def __init__(self, input_size: int, sequence_length: int = 60):
+        self.input_size = input_size
+        self.sequence_length = sequence_length
+        # Device selection: CUDA > MPS (Apple Silicon) > CPU
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+        else:
+            self.device = torch.device('cpu')
+        print(f"Using device: {self.device}")
+        
+        # Initialize models
+        self.models = {
+            'LSTM': LSTMRegressor(input_size).to(self.device),
+            'GRU': GRURegressor(input_size).to(self.device),
+            'XGBoost': XGBoostRegressor()
+        }
+        
+        self.trained = {name: False for name in self.models}
+        self.metrics = {}
+    
+    def train_pytorch_model(
+        self, 
+        model: nn.Module, 
+        X_train: np.ndarray, 
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        epochs: int = 50,
+        batch_size: int = 32,
+        lr: float = 1e-3
+    ) -> dict:
+        """Train a PyTorch model"""
+        from torch.utils.data import TensorDataset, DataLoader
+        
+        # Convert to tensors
+        X_train_t = torch.FloatTensor(X_train).to(self.device)
+        y_train_t = torch.FloatTensor(y_train).to(self.device)
+        X_val_t = torch.FloatTensor(X_val).to(self.device)
+        y_val_t = torch.FloatTensor(y_val).to(self.device)
+        
+        train_dataset = TensorDataset(X_train_t, y_train_t)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        criterion = nn.MSELoss()
+        
+        best_val_loss = float('inf')
+        history = {'train_loss': [], 'val_loss': []}
+        
+        for epoch in range(epochs):
+            # Training
+            model.train()
+            train_loss = 0
+            for X_batch, y_batch in train_loader:
+                optimizer.zero_grad()
+                predictions = model(X_batch)
+                loss = criterion(predictions, y_batch)
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
+            
+            train_loss /= len(train_loader)
+            
+            # Validation
+            model.eval()
+            with torch.no_grad():
+                val_predictions = model(X_val_t)
+                val_loss = criterion(val_predictions, y_val_t).item()
+            
+            history['train_loss'].append(train_loss)
+            history['val_loss'].append(val_loss)
+            
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+        
+        return history
+    
+    def train_all(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        epochs: int = 50
+    ):
+        """Train all models"""
+        print("Training LSTM...")
+        self.train_pytorch_model(
+            self.models['LSTM'], X_train, y_train, X_val, y_val, epochs
+        )
+        self.trained['LSTM'] = True
+        
+        print("Training GRU...")
+        self.train_pytorch_model(
+            self.models['GRU'], X_train, y_train, X_val, y_val, epochs
+        )
+        self.trained['GRU'] = True
+        
+        print("Training XGBoost...")
+        self.models['XGBoost'].fit(X_train, y_train)
+        self.trained['XGBoost'] = True
+        
+        print("All models trained!")
+    
+    def evaluate_all(
+        self,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        return_scaler=None,
+        close_prices: np.ndarray = None
+    ) -> dict:
+        """
+        Evaluate all models and return comparison metrics.
+        
+        Args:
+            X_test: Test features
+            y_test: Test targets (scaled returns)
+            return_scaler: Scaler to inverse transform returns
+            close_prices: Today's close prices for reconstructing predicted prices
+        """
+        results = {}
+        
+        for name, model in self.models.items():
+            if not self.trained[name]:
+                continue
+            
+            # Get predictions (in scaled return space)
+            if name == 'XGBoost':
+                predictions_scaled = model.predict(X_test)
+            else:
+                model.eval()
+                with torch.no_grad():
+                    X_t = torch.FloatTensor(X_test).to(self.device)
+                    predictions_scaled = model(X_t).cpu().numpy()
+            
+            # Inverse transform to actual returns
+            if return_scaler is not None:
+                pred_returns = return_scaler.inverse_transform(predictions_scaled.reshape(-1, 1)).flatten()
+                actual_returns = return_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+            else:
+                pred_returns = predictions_scaled
+                actual_returns = y_test
+            
+            # Reconstruct prices: predicted_price = close_price * (1 + predicted_return)
+            if close_prices is not None:
+                pred_prices = close_prices * (1 + pred_returns)
+                actual_prices = close_prices * (1 + actual_returns)
+                
+                # Calculate metrics on actual price scale
+                mse = np.mean((pred_prices - actual_prices) ** 2)
+                rmse = np.sqrt(mse)
+                mae = np.mean(np.abs(pred_prices - actual_prices))
+                mape = np.mean(np.abs((actual_prices - pred_prices) / actual_prices)) * 100
+            else:
+                # Fallback: metrics on returns (less interpretable)
+                mse = np.mean((pred_returns - actual_returns) ** 2)
+                rmse = np.sqrt(mse)
+                mae = np.mean(np.abs(pred_returns - actual_returns))
+                mape = np.nan
+                pred_prices = pred_returns
+                actual_prices = actual_returns
+            
+            # Directional accuracy: did we predict the right direction?
+            actual_direction = np.sign(actual_returns)
+            pred_direction = np.sign(pred_returns)
+            dir_acc = np.mean(actual_direction == pred_direction) * 100
+            
+            results[name] = {
+                'MSE': mse,
+                'RMSE': rmse,
+                'MAE': mae,
+                'MAPE': mape,
+                'Directional_Accuracy': dir_acc,
+                'predictions': pred_prices,
+                'pred_returns': pred_returns,
+                'predictions_scaled': predictions_scaled
+            }
+        
+        self.metrics = results
+        return results
+    
+    def predict_all(self, X: np.ndarray, return_scaler=None, current_price: float = None) -> dict:
+        """
+        Get predictions from all models.
+        
+        Args:
+            X: Input features
+            return_scaler: Scaler to inverse transform predicted returns
+            current_price: Today's close price for reconstructing predicted price
+        
+        Returns:
+            Dict with predicted prices (or returns if no current_price provided)
+        """
+        predictions = {}
+        
+        for name, model in self.models.items():
+            if not self.trained[name]:
+                continue
+            
+            if name == 'XGBoost':
+                pred_scaled = model.predict(X)
+            else:
+                model.eval()
+                with torch.no_grad():
+                    X_t = torch.FloatTensor(X).to(self.device)
+                    pred_scaled = model(X_t).cpu().numpy()
+            
+            # Get scalar value
+            pred_scaled = float(pred_scaled[0]) if len(pred_scaled.shape) > 0 and pred_scaled.shape[0] == 1 else pred_scaled
+            
+            # Inverse transform to actual return
+            if return_scaler is not None:
+                pred_return = return_scaler.inverse_transform([[pred_scaled]])[0, 0]
+            else:
+                pred_return = pred_scaled
+            
+            # Reconstruct price: predicted_price = current_price * (1 + predicted_return)
+            if current_price is not None:
+                pred_price = current_price * (1 + pred_return)
+                predictions[name] = pred_price
+            else:
+                predictions[name] = pred_return
+        
+        return predictions
+    
+    def save_models(self, save_dir: Path):
+        """Save all trained models"""
+        import joblib
+        
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save PyTorch models
+        for name in ['LSTM', 'GRU']:
+            if self.trained[name]:
+                torch.save(
+                    self.models[name].state_dict(),
+                    save_dir / f'{name.lower()}_regressor.pt'
+                )
+        
+        # Save XGBoost model
+        if self.trained['XGBoost']:
+            joblib.dump(self.models['XGBoost'].model, save_dir / 'xgboost_regressor.pkl')
+        
+        # Save metadata
+        joblib.dump({
+            'input_size': self.input_size,
+            'sequence_length': self.sequence_length,
+            'trained': self.trained,
+            'metrics': self.metrics
+        }, save_dir / 'multi_model_metadata.pkl')
+        
+        print(f"Models saved to {save_dir}")
+    
+    def load_models(self, save_dir: Path):
+        """Load all trained models"""
+        import joblib
+        
+        save_dir = Path(save_dir)
+        
+        # Load metadata
+        metadata = joblib.load(save_dir / 'multi_model_metadata.pkl')
+        self.input_size = metadata['input_size']
+        self.sequence_length = metadata['sequence_length']
+        self.trained = metadata['trained']
+        self.metrics = metadata.get('metrics', {})
+        
+        # Reinitialize models with correct input size
+        self.models = {
+            'LSTM': LSTMRegressor(self.input_size).to(self.device),
+            'GRU': GRURegressor(self.input_size).to(self.device),
+            'XGBoost': XGBoostRegressor()
+        }
+        
+        # Load PyTorch models
+        for name in ['LSTM', 'GRU']:
+            if self.trained[name]:
+                self.models[name].load_state_dict(
+                    torch.load(save_dir / f'{name.lower()}_regressor.pt', map_location=self.device)
+                )
+                self.models[name].eval()
+        
+        # Load XGBoost model
+        if self.trained['XGBoost']:
+            self.models['XGBoost'].model = joblib.load(save_dir / 'xgboost_regressor.pkl')
+        
+        print(f"Models loaded from {save_dir}")
+
+
+if __name__ == "__main__":
+    # Test the models
+    batch_size = 32
+    seq_len = 60
+    input_size = 50
+    
+    # Test LSTM
+    lstm = LSTMRegressor(input_size=input_size)
+    x = torch.randn(batch_size, seq_len, input_size)
+    out = lstm(x)
+    print(f"LSTM - Input: {x.shape}, Output: {out.shape}")
+    
+    # Test GRU
+    gru = GRURegressor(input_size=input_size)
+    out = gru(x)
+    print(f"GRU - Input: {x.shape}, Output: {out.shape}")
+    
+    # Test XGBoost
+    xgb = XGBoostRegressor()
+    X_np = x.numpy()
+    y_np = np.random.randn(batch_size)
+    xgb.fit(X_np, y_np)
+    pred = xgb.predict(X_np)
+    print(f"XGBoost - Input: {X_np.shape}, Output: {pred.shape}")

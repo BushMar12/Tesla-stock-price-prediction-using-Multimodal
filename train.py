@@ -1,5 +1,6 @@
 """
 Main training script for Tesla Stock Price Prediction
+Uses returns-based prediction for better accuracy
 """
 import sys
 from pathlib import Path
@@ -18,11 +19,12 @@ def main():
     """Main training pipeline"""
     print("=" * 60)
     print("Tesla Stock Price Prediction - Training Pipeline")
+    print("Predicting Returns → Reconstructing Prices")
     print("=" * 60)
     
     # Step 1: Fetch stock data
     print("\n📊 Step 1: Fetching stock data...")
-    stock_df = fetch_stock_data()
+    stock_df = fetch_stock_data(start_date="2010-06-29")
     
     # Step 2: Fetch sentiment data
     print("\n💭 Step 2: Fetching sentiment data...")
@@ -37,9 +39,9 @@ def main():
     preprocessor = DataPreprocessor()
     splits = preprocessor.prepare_data(stock_df, sentiment_df, indicators_df)
     
-    # Step 5: Train model
+    # Step 5: Train model (pass return_scaler for proper evaluation)
     print("\n🧠 Step 5: Training model...")
-    model, trainer, history = train_model(splits)
+    model, trainer, history = train_model(splits, return_scaler=preprocessor.return_scaler)
     
     print("\n" + "=" * 60)
     print("✅ Training complete!")

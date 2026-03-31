@@ -225,8 +225,71 @@ def create_sentiment_chart(sentiment_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def load_multi_models():
+    """Load multi-model comparison models"""
+    try:
+        from src.models.regression_models import MultiModelRegressor
+        import joblib
+        
+        metadata_path = MODELS_DIR / 'multi_model_metadata.pkl'
+        if not metadata_path.exists():
+            return None
+        
+        metadata = joblib.load(metadata_path)
+        multi_model = MultiModelRegressor(
+            input_size=metadata['input_size'],
+            sequence_length=metadata['sequence_length']
+        )
+        multi_model.load_models(MODELS_DIR)
+        return multi_model
+    except Exception as e:
+        return None
+
+
+def get_multi_model_predictions(multi_model, df: pd.DataFrame, sentiment_df: pd.DataFrame):
+    """Get predictions from all models using returns-based approach"""
+    try:
+        import joblib
+        
+        # Calculate indicators
+        df_with_indicators = calculate_all_indicators(df, add_targets=False)
+        
+        # Preprocess
+        preprocessor = DataPreprocessor()
+        merged = preprocessor.merge_data(df, sentiment_df, df_with_indicators)
+        preprocessor.select_features(merged)
+        merged = preprocessor.clean_data(merged)
+        
+        # Load scalers
+        feature_scaler = joblib.load(MODELS_DIR / 'feature_scaler.pkl')
+        return_scaler = joblib.load(MODELS_DIR / 'return_scaler.pkl')
+        
+        all_features = preprocessor.feature_columns + preprocessor.sentiment_columns
+        merged[all_features] = feature_scaler.transform(merged[all_features])
+        
+        # Get last sequence
+        sequence_length = preprocessor.sequence_length
+        X_all = merged[all_features].values
+        X = X_all[-sequence_length:].reshape(1, sequence_length, -1)
+        
+        # Get current (today's) close price for reconstructing predicted price
+        current_price = df['close'].iloc[-1]
+        
+        # Get predictions from all models (returns predicted prices)
+        predictions = multi_model.predict_all(
+            X, 
+            return_scaler=return_scaler,
+            current_price=current_price
+        )
+        
+        return predictions, current_price
+    except Exception as e:
+        st.error(f"Multi-model prediction error: {e}")
+        return None, None
+
+
 def make_prediction(model, preprocessor, df: pd.DataFrame, sentiment_df: pd.DataFrame):
-    """Make prediction using the model"""
+    """Make prediction using the model with returns-based approach"""
     try:
         from src.features.technical import calculate_all_indicators
         import joblib
@@ -245,6 +308,7 @@ def make_prediction(model, preprocessor, df: pd.DataFrame, sentiment_df: pd.Data
         
         # Load scalers
         feature_scaler = joblib.load(MODELS_DIR / 'feature_scaler.pkl')
+        return_scaler = joblib.load(MODELS_DIR / 'return_scaler.pkl')
         
         all_features = preprocessor.feature_columns + preprocessor.sentiment_columns
         merged[all_features] = feature_scaler.transform(merged[all_features])
@@ -267,13 +331,29 @@ def make_prediction(model, preprocessor, df: pd.DataFrame, sentiment_df: pd.Data
         with torch.no_grad():
             outputs = model(X_price, X_sentiment)
             
+            # Classification output
             direction_probs = torch.softmax(outputs['classification'], dim=-1)
             direction = torch.argmax(direction_probs, dim=-1).item()
+            
+            # Regression output (predicted scaled return)
+            predicted_return_scaled = outputs['regression'].item()
+        
+        # Inverse transform to actual return
+        predicted_return = return_scaler.inverse_transform([[predicted_return_scaled]])[0, 0]
+        
+        # Get current price and reconstruct predicted price
+        current_price = df['close'].iloc[-1]
+        predicted_price = current_price * (1 + predicted_return)
+        predicted_change = predicted_return * 100  # Convert to percentage
             
         return {
             'direction': direction,
             'direction_probs': direction_probs.numpy()[0],
-            'confidence': direction_probs.max().item()
+            'confidence': direction_probs.max().item(),
+            'predicted_price': predicted_price,
+            'current_price': current_price,
+            'predicted_change': predicted_change,
+            'predicted_return': predicted_return
         }
     
     except Exception as e:
@@ -285,21 +365,30 @@ def simulate_prediction(df: pd.DataFrame):
     """Simulate prediction when model is not available"""
     # Use recent momentum for simulation
     recent_returns = df['close'].pct_change().tail(5).mean()
+    current_price = df['close'].iloc[-1]
     
     if recent_returns > 0.01:
         direction = 2  # Up
         probs = [0.1, 0.2, 0.7]
+        predicted_change = np.random.uniform(1, 5)
     elif recent_returns < -0.01:
         direction = 0  # Down
         probs = [0.7, 0.2, 0.1]
+        predicted_change = np.random.uniform(-5, -1)
     else:
         direction = 1  # Neutral
         probs = [0.25, 0.5, 0.25]
+        predicted_change = np.random.uniform(-1, 1)
+    
+    predicted_price = current_price * (1 + predicted_change / 100)
     
     return {
         'direction': direction,
         'direction_probs': np.array(probs),
-        'confidence': max(probs)
+        'confidence': max(probs),
+        'predicted_price': predicted_price,
+        'current_price': current_price,
+        'predicted_change': predicted_change
     }
 
 
@@ -307,7 +396,7 @@ def main():
     """Main Streamlit app"""
     
     # Header
-    st.markdown('<div class="main-header">🚗 Tesla Stock Predictor</div>', 
+    st.markdown('<div class="main-header">Tesla Stock Predictor</div>', 
                 unsafe_allow_html=True)
     st.markdown("### Multimodal Deep Learning for Stock Price Prediction")
     
@@ -350,9 +439,12 @@ def main():
     # Load model
     model, metadata, model_loaded = load_model()
     
+    # Load multi-model comparison if available
+    multi_model = load_multi_models()
+    
     # Main content
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["📈 Price Chart", "📊 Technical Analysis", "💭 Sentiment", "🔮 Prediction"]
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📈 Price Chart", "📊 Technical Analysis", "💭 Sentiment", "🔮 Prediction", "🏆 Model Comparison"]
     )
     
     with tab1:
@@ -473,7 +565,39 @@ def main():
                 if prediction:
                     st.markdown("---")
                     
-                    # Direction prediction
+                    # Price Prediction (Regression)
+                    st.subheader("💰 Price Prediction (Regression)")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    current_price = prediction['current_price']
+                    predicted_price = prediction['predicted_price']
+                    predicted_change = prediction['predicted_change']
+                    
+                    with col1:
+                        st.metric("Current Price", f"${current_price:.2f}")
+                    
+                    with col2:
+                        change_color = "green" if predicted_change > 0 else "red" if predicted_change < 0 else "gray"
+                        st.metric(
+                            "Predicted Price (Next Day)", 
+                            f"${predicted_price:.2f}",
+                            f"{predicted_change:+.2f}%"
+                        )
+                    
+                    with col3:
+                        price_diff = predicted_price - current_price
+                        st.metric(
+                            "Expected Change",
+                            f"${abs(price_diff):.2f}",
+                            "Gain" if price_diff > 0 else "Loss" if price_diff < 0 else "No Change"
+                        )
+                    
+                    st.markdown("---")
+                    
+                    # Direction Prediction (Classification)
+                    st.subheader("📊 Direction Prediction (Classification)")
+                    
                     direction_labels = ['📉 DOWN', '➡️ NEUTRAL', '📈 UP']
                     direction_colors = ['red', 'gray', 'green']
                     
@@ -492,15 +616,15 @@ def main():
                     
                     with col1:
                         st.metric("Down", f"{probs[0]*100:.1f}%")
-                        st.progress(probs[0])
+                        st.progress(float(probs[0]))
                     
                     with col2:
                         st.metric("Neutral", f"{probs[1]*100:.1f}%")
-                        st.progress(probs[1])
+                        st.progress(float(probs[1]))
                     
                     with col3:
                         st.metric("Up", f"{probs[2]*100:.1f}%")
-                        st.progress(probs[2])
+                        st.progress(float(probs[2]))
                     
                     # Warning
                     st.warning("""
@@ -529,6 +653,135 @@ def main():
                - Combines encoded representations
                - Dual output heads for regression & classification
             """)
+    
+    with tab5:
+        st.subheader("🏆 Model Comparison: LSTM vs GRU vs XGBoost")
+        
+        if multi_model is None:
+            st.warning("Multi-model comparison not available. Please run `python train_comparison.py` first to train all models.")
+            st.code("python train_comparison.py", language="bash")
+        else:
+            st.success("All models loaded successfully!")
+            
+            # Display saved metrics if available
+            comparison_file = MODELS_DIR / 'model_comparison.csv'
+            if comparison_file.exists():
+                st.subheader("📊 Test Set Performance Metrics")
+                comparison_df = pd.read_csv(comparison_file)
+                
+                # Style the dataframe
+                st.dataframe(
+                    comparison_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Create bar chart for comparison
+                if multi_model.metrics:
+                    metrics_data = []
+                    for model_name, metrics in multi_model.metrics.items():
+                        metrics_data.append({
+                            'Model': model_name,
+                            'RMSE': metrics['RMSE'],
+                            'MAE': metrics['MAE']
+                        })
+                    
+                    metrics_df = pd.DataFrame(metrics_data)
+                    
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        name='RMSE',
+                        x=metrics_df['Model'],
+                        y=metrics_df['RMSE'],
+                        marker_color='indianred'
+                    ))
+                    fig.add_trace(go.Bar(
+                        name='MAE',
+                        x=metrics_df['Model'],
+                        y=metrics_df['MAE'],
+                        marker_color='lightsalmon'
+                    ))
+                    fig.update_layout(
+                        title='Model Error Comparison',
+                        barmode='group',
+                        yaxis_title='Error ($)',
+                        template='plotly_white'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            st.markdown("---")
+            
+            # Live predictions from all models
+            st.subheader("🔮 Live Predictions from All Models")
+            
+            predict_btn = st.button("🎯 Get Predictions from All Models", use_container_width=True)
+            
+            if predict_btn:
+                with st.spinner("Getting predictions from LSTM, GRU, and XGBoost..."):
+                    predictions, current_price = get_multi_model_predictions(
+                        multi_model, df, sentiment_df
+                    )
+                    
+                    if predictions and current_price:
+                        st.markdown(f"**Current Price:** ${current_price:.2f}")
+                        st.markdown("---")
+                        
+                        # Create prediction comparison table
+                        pred_data = []
+                        for model_name, pred_price in predictions.items():
+                            change = ((pred_price - current_price) / current_price) * 100
+                            pred_data.append({
+                                'Model': model_name,
+                                'Predicted Price': f"${pred_price:.2f}",
+                                'Change': f"{change:+.2f}%",
+                                'Direction': '📈 Up' if change > 0 else '📉 Down' if change < 0 else '➡️ Neutral'
+                            })
+                        
+                        pred_df = pd.DataFrame(pred_data)
+                        
+                        # Display as columns
+                        cols = st.columns(len(predictions))
+                        for i, (model_name, pred_price) in enumerate(predictions.items()):
+                            change = ((pred_price - current_price) / current_price) * 100
+                            with cols[i]:
+                                st.metric(
+                                    model_name,
+                                    f"${pred_price:.2f}",
+                                    f"{change:+.2f}%"
+                                )
+                        
+                        st.markdown("---")
+                        st.subheader("Prediction Summary Table")
+                        st.dataframe(pred_df, use_container_width=True, hide_index=True)
+                        
+                        # Calculate ensemble prediction (average)
+                        ensemble_price = np.mean(list(predictions.values()))
+                        ensemble_change = ((ensemble_price - current_price) / current_price) * 100
+                        
+                        st.markdown("---")
+                        st.subheader("🎯 Ensemble Prediction (Average)")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Current Price", f"${current_price:.2f}")
+                        with col2:
+                            st.metric("Ensemble Prediction", f"${ensemble_price:.2f}", f"{ensemble_change:+.2f}%")
+                        with col3:
+                            direction = '📈 Up' if ensemble_change > 0.5 else '📉 Down' if ensemble_change < -0.5 else '➡️ Neutral'
+                            st.metric("Direction", direction)
+            
+            # Model descriptions
+            with st.expander("📚 Model Descriptions"):
+                st.markdown("""
+                | Model | Description | Strengths |
+                |-------|-------------|-----------|
+                | **LSTM** | Long Short-Term Memory neural network | Captures long-term dependencies, handles vanishing gradients |
+                | **GRU** | Gated Recurrent Unit neural network | Faster training, fewer parameters than LSTM |
+                | **XGBoost** | Gradient Boosting ensemble method | Handles non-linear patterns, robust to outliers |
+                
+                All models use the same input features:
+                - 60-day price history with technical indicators
+                - Sentiment features from news analysis
+                """)
     
     # Footer
     st.markdown("---")

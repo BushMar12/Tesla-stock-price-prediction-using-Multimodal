@@ -4,7 +4,7 @@ A comprehensive stock price prediction system that combines time-series analysis
 
 ![Training History](training_history.png)
 
-## 📋 Overview
+## Overview
 
 This project predicts Tesla (TSLA) stock prices using a **returns-based approach**:
 1. Predicts daily percentage returns (more stationary than raw prices)
@@ -50,7 +50,7 @@ This project predicts Tesla (TSLA) stock prices using a **returns-based approach
 └── requirements.txt          # Dependencies
 ```
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### 1. Installation
 
@@ -83,7 +83,7 @@ python train_comparison.py
 streamlit run app/streamlit_app.py
 ```
 
-## ⚙️ Configuration
+##  Configuration
 
 Edit `config.py` to customize:
 
@@ -181,7 +181,7 @@ predictions = model.predict(X_test)
 - Model performance comparison
 - Historical accuracy analysis
 
-## 🛠️ Technical Stack
+##  Technical Stack
 
 | Category | Technologies |
 |----------|-------------|
@@ -192,17 +192,14 @@ predictions = model.predict(X_test)
 | Web App | Streamlit |
 | NLP | NLTK, VADER, FinBERT |
 
-## 📚 References
+## References
 
 - [LSTM Networks](https://www.bioinf.jku.at/publications/older/2604.pdf) - Hochreiter & Schmidhuber
 - [GRU](https://arxiv.org/abs/1406.1078) - Cho et al.
 - [XGBoost](https://arxiv.org/abs/1603.02754) - Chen & Guestrin
 - [FinBERT](https://arxiv.org/abs/1908.10063) - Financial Sentiment Analysis
 
-## 📄 License
+##  License
 
 This project is for educational purposes (UTS 49275 Neural Networks and Fuzzy Logic).
 
-## 👤 Author
-
-UTS Master's Student - Neural Networks and Fuzzy Logic Project

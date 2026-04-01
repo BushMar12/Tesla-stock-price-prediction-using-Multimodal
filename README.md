@@ -150,13 +150,13 @@ Dense (1 output - predicted return)
 - **MAPE** - Mean Absolute Percentage Error
 - **Direction Accuracy** - Correctly predicted Up/Down movements
 
-## 🎯 Tasks
+##  Tasks
 
 The system performs:
 1. **Regression**: Predict next-day closing price
 2. **Classification**: Predict price direction (Up/Down)
 
-## 📝 Usage Examples
+##  Usage Examples
 
 ### Make Predictions
 ```python

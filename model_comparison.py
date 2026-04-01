@@ -27,7 +27,7 @@ def main():
     print("=" * 60)
     
     # Step 1: Fetch and preprocess data
-    print("\n📊 Step 1: Fetching and preprocessing data...")
+    print("\n Step 1: Fetching and preprocessing data...")
     stock_df = fetch_stock_data(start_date="2010-06-29")
     sentiment_df = fetch_sentiment_data(stock_df, use_real_data=False)
     indicators_df = calculate_all_indicators(stock_df)
@@ -59,14 +59,14 @@ def main():
     print(f"Test data shape: {X_test.shape}")
     
     # Step 2: Initialize and train models
-    print("\n🧠 Step 2: Training models...")
+    print("\n Step 2: Training models...")
     input_size = X_train.shape[2]
     multi_model = MultiModelRegressor(input_size=input_size)
     
     multi_model.train_all(X_train, y_train, X_val, y_val, epochs=100)
     
     # Step 3: Evaluate models (pass return_scaler and close_prices for price reconstruction)
-    print("\n📈 Step 3: Evaluating models...")
+    print("\n Step 3: Evaluating models...")
     results = multi_model.evaluate_all(
         X_test, y_test, 
         return_scaler=preprocessor.return_scaler,
@@ -93,10 +93,10 @@ def main():
     
     # Find best model
     best_model = min(results.items(), key=lambda x: x[1]['RMSE'])
-    print(f"\n🏆 Best Model (lowest RMSE): {best_model[0]}")
+    print(f"\n Best Model (lowest RMSE): {best_model[0]}")
     
     # Step 5: Save models
-    print("\n💾 Step 5: Saving models...")
+    print("\n Step 5: Saving models...")
     multi_model.save_models(MODELS_DIR)
     
     # Save comparison results

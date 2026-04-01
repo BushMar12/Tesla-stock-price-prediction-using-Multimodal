@@ -23,24 +23,24 @@ def main():
     print("=" * 60)
     
     # Step 1: Fetch stock data
-    print("\n📊 Step 1: Fetching stock data...")
+    print("\n Step 1: Fetching stock data...")
     stock_df = fetch_stock_data(start_date="2010-06-29")
     
     # Step 2: Fetch sentiment data
-    print("\n💭 Step 2: Fetching sentiment data...")
+    print("\n Step 2: Fetching sentiment data...")
     sentiment_df = fetch_sentiment_data(stock_df, use_real_data=True)
     
     # Step 3: Calculate technical indicators
-    print("\n📈 Step 3: Calculating technical indicators...")
+    print("\n Step 3: Calculating technical indicators...")
     indicators_df = calculate_all_indicators(stock_df)
     
     # Step 4: Preprocess data
-    print("\n🔧 Step 4: Preprocessing data...")
+    print("\n Step 4: Preprocessing data...")
     preprocessor = DataPreprocessor()
     splits = preprocessor.prepare_data(stock_df, sentiment_df, indicators_df)
     
     # Step 5: Train model (pass return_scaler for proper evaluation)
-    print("\n🧠 Step 5: Training model...")
+    print("\n Step 5: Training model...")
     model, trainer, history = train_model(splits, return_scaler=preprocessor.return_scaler)
     
     print("\n" + "=" * 60)

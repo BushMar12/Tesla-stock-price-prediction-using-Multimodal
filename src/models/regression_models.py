@@ -147,9 +147,9 @@ class XGBoostRegressor:
         self.model_name = "XGBoost"
         self.model = None
         self.params = {
-            'n_estimators': kwargs.get('n_estimators', 100),
-            'max_depth': kwargs.get('max_depth', 6),
-            'learning_rate': kwargs.get('learning_rate', 0.1),
+            'n_estimators': kwargs.get('n_estimators', 400),
+            'max_depth': kwargs.get('max_depth', 4),
+            'learning_rate': kwargs.get('learning_rate', 0.05),
             'subsample': kwargs.get('subsample', 0.8),
             'random_state': 42
         }
@@ -231,6 +231,9 @@ class MultiModelRegressor:
         best_val_loss = float('inf')
         history = {'train_loss': [], 'val_loss': []}
         
+        print(f"  {'Epoch':<8} {'Train Loss':<15} {'Val Loss':<15} {'Status'}")
+        print(f"  {'-'*50}")
+        
         for epoch in range(epochs):
             # Training
             model.train()
@@ -254,8 +257,18 @@ class MultiModelRegressor:
             history['train_loss'].append(train_loss)
             history['val_loss'].append(val_loss)
             
+            # Check for improvement
+            status = ""
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                status = "✓ Best"
+            
+            # Print progress every 10 epochs or first/last
+            if epoch % 10 == 0 or epoch == epochs - 1 or status:
+                print(f"  {epoch+1:<8} {train_loss:<15.6f} {val_loss:<15.6f} {status}")
+        
+        print(f"  {'-'*50}")
+        print(f"  Best Val Loss: {best_val_loss:.6f}")
         
         return history
     
@@ -265,26 +278,68 @@ class MultiModelRegressor:
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
-        epochs: int = 50
+        epochs: int = 50,
+        plot_history: bool = True
     ):
         """Train all models"""
+        self.histories = {}
+        
+        print("\n" + "="*60)
         print("Training LSTM...")
-        self.train_pytorch_model(
+        print("="*60)
+        self.histories['LSTM'] = self.train_pytorch_model(
             self.models['LSTM'], X_train, y_train, X_val, y_val, epochs
         )
         self.trained['LSTM'] = True
         
+        print("\n" + "="*60)
         print("Training GRU...")
-        self.train_pytorch_model(
+        print("="*60)
+        self.histories['GRU'] = self.train_pytorch_model(
             self.models['GRU'], X_train, y_train, X_val, y_val, epochs
         )
         self.trained['GRU'] = True
         
+        print("\n" + "="*60)
         print("Training XGBoost...")
+        print("="*60)
         self.models['XGBoost'].fit(X_train, y_train)
         self.trained['XGBoost'] = True
+        print("  XGBoost training complete (no epochs - gradient boosting)")
         
-        print("All models trained!")
+        print("\n✅ All models trained!")
+        
+        # Plot training history
+        if plot_history:
+            self.plot_training_history()
+    
+    def plot_training_history(self):
+        """Plot training and validation loss curves"""
+        import matplotlib.pyplot as plt
+        
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        
+        for idx, (name, history) in enumerate(self.histories.items()):
+            ax = axes[idx]
+            epochs = range(1, len(history['train_loss']) + 1)
+            
+            ax.plot(epochs, history['train_loss'], 'b-', label='Train Loss', linewidth=2)
+            ax.plot(epochs, history['val_loss'], 'r-', label='Val Loss', linewidth=2)
+            ax.set_title(f'{name} Training History', fontsize=14)
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('Loss (MSE)')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            # Mark best epoch
+            best_epoch = np.argmin(history['val_loss']) + 1
+            best_val = min(history['val_loss'])
+            ax.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.7, label=f'Best: Epoch {best_epoch}')
+            ax.scatter([best_epoch], [best_val], color='g', s=100, zorder=5)
+        
+        plt.tight_layout()
+        plt.savefig('training_history.png', dpi=150)
+        print("\n📊 Training history plot saved to 'training_history.png'")
     
     def evaluate_all(
         self,

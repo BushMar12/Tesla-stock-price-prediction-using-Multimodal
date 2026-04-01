@@ -367,18 +367,14 @@ def simulate_prediction(df: pd.DataFrame):
     recent_returns = df['close'].pct_change().tail(5).mean()
     current_price = df['close'].iloc[-1]
     
-    if recent_returns > 0.01:
-        direction = 2  # Up
-        probs = [0.1, 0.2, 0.7]
-        predicted_change = np.random.uniform(1, 5)
-    elif recent_returns < -0.01:
-        direction = 0  # Down
-        probs = [0.7, 0.2, 0.1]
-        predicted_change = np.random.uniform(-5, -1)
+    if recent_returns > 0:
+        direction = 1  # Up
+        probs = [0.3, 0.7]
+        predicted_change = np.random.uniform(0.5, 3)
     else:
-        direction = 1  # Neutral
-        probs = [0.25, 0.5, 0.25]
-        predicted_change = np.random.uniform(-1, 1)
+        direction = 0  # Down
+        probs = [0.7, 0.3]
+        predicted_change = np.random.uniform(-3, -0.5)
     
     predicted_price = current_price * (1 + predicted_change / 100)
     
@@ -408,7 +404,7 @@ def main():
     with col1:
         start_date = st.date_input(
             "Start Date",
-            datetime.now() - timedelta(days=365)
+            datetime(2010, 6, 29)
         )
     with col2:
         end_date = st.date_input(
@@ -598,8 +594,7 @@ def main():
                     # Direction Prediction (Classification)
                     st.subheader("📊 Direction Prediction (Classification)")
                     
-                    direction_labels = ['📉 DOWN', '➡️ NEUTRAL', '📈 UP']
-                    direction_colors = ['red', 'gray', 'green']
+                    direction_labels = ['📉 DOWN', '📈 UP']
                     
                     direction = prediction['direction']
                     confidence = prediction['confidence']
@@ -612,19 +607,15 @@ def main():
                     # Probability bars
                     st.subheader("Direction Probabilities")
                     
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2 = st.columns(2)
                     
                     with col1:
                         st.metric("Down", f"{probs[0]*100:.1f}%")
                         st.progress(float(probs[0]))
                     
                     with col2:
-                        st.metric("Neutral", f"{probs[1]*100:.1f}%")
+                        st.metric("Up", f"{probs[1]*100:.1f}%")
                         st.progress(float(probs[1]))
-                    
-                    with col3:
-                        st.metric("Up", f"{probs[2]*100:.1f}%")
-                        st.progress(float(probs[2]))
                     
                     # Warning
                     st.warning("""

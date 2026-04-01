@@ -350,8 +350,7 @@ class Trainer:
             print(f"Epoch {epoch+1}/{epochs} | "
                   f"Train Loss: {train_metrics['loss']:.4f} | "
                   f"Val Loss: {val_metrics['loss']:.4f} | "
-                  f"Val Acc: {val_metrics['accuracy']:.4f} | "
-                  f"RMSE: {val_metrics['rmse']:.2f}")
+                  f"Val Acc: {val_metrics['accuracy']:.4f}")
             
             # Save best model
             if val_metrics['loss'] < best_val_loss:

@@ -157,11 +157,8 @@ def add_target_variables(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
     # Future return (for scaling)
     df['Target_Return'] = df['close'].pct_change(periods=horizon).shift(-horizon)
     
-    # Direction (classification target)
-    df['Target_Direction'] = np.where(
-        df['Target_Return'] > 0.01, 2,  # Up (> 1%)
-        np.where(df['Target_Return'] < -0.01, 0, 1)  # Down (< -1%) or Neutral
-    )
+    # Direction (binary classification: 0 = Down, 1 = Up)
+    df['Target_Direction'] = (df['Target_Return'] > 0).astype(int)
     
     return df
 

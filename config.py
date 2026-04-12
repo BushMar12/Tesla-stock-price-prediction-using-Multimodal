@@ -72,6 +72,7 @@ SENTIMENT_CONFIG = {
     "finbert_model": "ProsusAI/finbert",
     "max_headlines_per_day": 10,
     "sentiment_lookback_days": 3,
+    "use_real_data_fetch": True,
 }
 
 # Streamlit settings
@@ -79,4 +80,5 @@ STREAMLIT_CONFIG = {
     "page_title": "Tesla Stock Predictor",
     "page_icon": "📈",
     "layout": "wide",
+    "sentiment_use_real_data": False,
 }

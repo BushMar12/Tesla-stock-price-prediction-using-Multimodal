@@ -1,6 +1,6 @@
 # Tesla Stock Price Prediction Using Multimodal Deep Learning
 
-A comprehensive stock price prediction system that combines time-series analysis with sentiment data using deep learning models (LSTM, GRU) and machine learning (XGBoost).
+A comprehensive stock price prediction system that combines time-series analysis with sentiment data using a **multimodal fusion** model (PyTorch), plus **standalone LSTM, GRU, and XGBoost** baselines for comparison.
 
 ![Training History](training_history.png)
 
@@ -11,9 +11,8 @@ This project predicts Tesla (TSLA) stock prices using a **returns-based approach
 2. Reconstructs actual prices: `predicted_price = today_close × (1 + predicted_return)`
 
 ### Models Implemented
-- **LSTM** - Long Short-Term Memory (Bidirectional, 2 layers)
-- **GRU** - Gated Recurrent Unit (Bidirectional, 2 layers)
-- **XGBoost** - Gradient Boosting for comparison
+- **Multimodal fusion** (`train.py`) — time-series encoder + sentiment encoder + optional cross-modal attention (`src/models/fusion.py`)
+- **LSTM / GRU / XGBoost** (`model_comparison.py`) — separate bidirectional recurrent regressors and **XGBoost** (`xgboost.XGBRegressor`) on flattened sequences
 
 ### Features Used
 - **Price Data**: OHLCV (Open, High, Low, Close, Volume)
@@ -40,13 +39,16 @@ This project predicts Tesla (TSLA) stock prices using a **returns-based approach
 │   ├── features/
 │   │   └── technical.py      # Technical indicator calculations
 │   ├── models/
-│   │   ├── regression_models.py  # LSTM, GRU, XGBoost models
-│   │   └── trainer.py        # Training utilities
+│   │   ├── fusion.py         # Multimodal fusion + attention
+│   │   ├── time_series.py    # Time-series encoder
+│   │   ├── text_encoder.py   # Sentiment encoders
+│   │   ├── regression_models.py  # Standalone LSTM, GRU, XGBoost
+│   │   └── trainer.py        # Training loop for fusion model
 │   └── utils/                # Helper functions
 ├── config.py                 # Configuration settings
-├── train.py                  # Main training script
-├── train_comparison.py       # Model comparison training
-├── predict.py                # Prediction script
+├── train.py                  # Train multimodal fusion model
+├── model_comparison.py       # Train & compare LSTM, GRU, XGBoost
+├── predict.py                # Prediction script (fusion checkpoint)
 └── requirements.txt          # Dependencies
 ```
 
@@ -70,11 +72,11 @@ pip install -r requirements.txt
 ### 2. Train Models
 
 ```bash
-# Train all models (LSTM, GRU, XGBoost)
+# Multimodal fusion model (saved under models/, e.g. best_model.pt)
 python train.py
 
-# Or run model comparison
-python train_comparison.py
+# LSTM vs GRU vs XGBoost baselines (saves models + model_comparison.csv)
+python model_comparison.py
 ```
 
 ### 3. Run Streamlit Dashboard
@@ -82,6 +84,8 @@ python train_comparison.py
 ```bash
 streamlit run app/streamlit_app.py
 ```
+
+The app uses `STREAMLIT_CONFIG["sentiment_use_real_data"]` (default **false**) so the dashboard loads quickly without RSS/network sentiment fetching. Training scripts use `SENTIMENT_CONFIG["use_real_data_fetch"]` instead (default **true**).
 
 ##  Configuration
 
@@ -92,6 +96,18 @@ Edit `config.py` to customize:
 STOCK_SYMBOL = "TSLA"
 START_DATE = "2010-06-29"
 SEQUENCE_LENGTH = 60  # Look-back window (days)
+
+# Align sentiment source across train.py, model_comparison.py, predict.py
+SENTIMENT_CONFIG = {
+    ...
+    "use_real_data_fetch": True,   # False = synthetic only (faster, offline-friendly)
+}
+
+# Dashboard: synthetic sentiment by default
+STREAMLIT_CONFIG = {
+    ...
+    "sentiment_use_real_data": False,
+}
 
 # Model architecture
 MODEL_CONFIG = {
@@ -126,22 +142,23 @@ print(torch.cuda.is_available())          # For NVIDIA
 
 ## 📊 Model Architecture
 
-### LSTM/GRU
+### Multimodal fusion (`train.py`)
+Time-series branch (e.g. LSTM-based encoder in `time_series.py`), sentiment branch (`text_encoder.py`), optional cross-modal attention, then fusion MLPs with regression and direction-classification heads. See `src/models/fusion.py`.
+
+### Standalone LSTM / GRU (`model_comparison.py`)
 ```
-Input (60 timesteps × 57 features)
+Input (60 timesteps × N features)
     ↓
 Bidirectional LSTM/GRU (128 hidden, 2 layers)
     ↓
 Dropout (0.2)
     ↓
-Dense (1 output - predicted return)
+Dense (1 output - scaled return)
 ```
 
-### XGBoost
-- 100 estimators
-- Max depth: 6
-- Learning rate: 0.1
-- Subsample: 0.8
+### XGBoost (comparison script)
+- **Library**: `xgboost.XGBRegressor`
+- Default hyperparameters in `XGBoostRegressor`: 400 estimators, max depth 4, learning rate 0.05, subsample 0.8
 
 ## 📈 Metrics
 
@@ -158,21 +175,25 @@ The system performs:
 
 ##  Usage Examples
 
-### Make Predictions
+### Load comparison models after `model_comparison.py`
+
 ```python
-from src.models.regression_models import MultiModelPredictor
-from src.data.preprocessing import prepare_data
+from pathlib import Path
+from src.models.regression_models import MultiModelRegressor
+from config import MODELS_DIR
 
-# Load data
-X_train, X_val, X_test, y_train, y_val, y_test, scalers = prepare_data()
-
-# Load trained model
-model = MultiModelPredictor()
-model.load_models('models/')
-
-# Predict
-predictions = model.predict(X_test)
+regressor = MultiModelRegressor(input_size=64)  # set to saved input_size
+regressor.load_models(MODELS_DIR)
+# Use regressor.models['LSTM'], etc., with your preprocessed tensors
 ```
+
+### Make Predictions (CLI)
+
+```bash
+python predict.py
+```
+
+Requires a trained fusion checkpoint from `train.py` (see `src/utils/helpers.py`).
 
 ### Streamlit Dashboard Features
 - Real-time stock data visualization

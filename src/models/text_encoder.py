@@ -2,6 +2,8 @@
 Text/Sentiment encoder using dense layers
 (Optionally using FinBERT for embedding extraction)
 """
+import importlib
+import importlib.util
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -148,8 +150,14 @@ class FinBERTEncoder(nn.Module):
         super().__init__()
         
         try:
-            from transformers import AutoModel, AutoTokenizer
-            
+            if importlib.util.find_spec("transformers") is None:
+                raise ImportError(
+                    "Install the optional dependency: pip install transformers"
+                )
+            transformers_mod = importlib.import_module("transformers")
+            AutoTokenizer = transformers_mod.AutoTokenizer
+            AutoModel = transformers_mod.AutoModel
+
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.bert = AutoModel.from_pretrained(model_name)
             

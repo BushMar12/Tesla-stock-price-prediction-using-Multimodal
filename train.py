@@ -13,6 +13,7 @@ from src.data.sentiment_data import fetch_sentiment_data
 from src.features.technical import calculate_all_indicators
 from src.data.preprocessing import DataPreprocessor
 from src.models.trainer import train_model
+from config import SENTIMENT_CONFIG
 
 
 def main():
@@ -28,7 +29,9 @@ def main():
     
     # Step 2: Fetch sentiment data
     print("\n Step 2: Fetching sentiment data...")
-    sentiment_df = fetch_sentiment_data(stock_df, use_real_data=True)
+    sentiment_df = fetch_sentiment_data(
+        stock_df, use_real_data=SENTIMENT_CONFIG["use_real_data_fetch"]
+    )
     
     # Step 3: Calculate technical indicators
     print("\n Step 3: Calculating technical indicators...")

@@ -20,7 +20,7 @@ This project predicts Tesla (TSLA) stock prices using a **returns-based approach
 - **Sentiment Data**: News sentiment scores (synthetic or real)
 - **Derived Features**: Daily returns, price momentum, volatility
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```
 ├── app/
@@ -126,7 +126,7 @@ TRAINING_CONFIG = {
 }
 ```
 
-## 🖥️ GPU Support
+## GPU Support
 
 The project supports:
 - **CUDA** (NVIDIA GPUs)
@@ -160,7 +160,7 @@ Dense (1 output - scaled return)
 - **Library**: `xgboost.XGBRegressor`
 - Default hyperparameters in `XGBoostRegressor`: 400 estimators, max depth 4, learning rate 0.05, subsample 0.8
 
-## 📈 Metrics
+## Metrics
 
 - **RMSE** - Root Mean Square Error (in dollars)
 - **MAE** - Mean Absolute Error (in dollars)
@@ -202,7 +202,7 @@ Requires a trained fusion checkpoint from `train.py` (see `src/utils/helpers.py`
 - Model performance comparison
 - Historical accuracy analysis
 
-##  Technical Stack
+## Technical Stack
 
 | Category | Technologies |
 |----------|-------------|
@@ -220,7 +220,7 @@ Requires a trained fusion checkpoint from `train.py` (see `src/utils/helpers.py`
 - [XGBoost](https://arxiv.org/abs/1603.02754) - Chen & Guestrin
 - [FinBERT](https://arxiv.org/abs/1908.10063) - Financial Sentiment Analysis
 
-##  License
+## License
 
 This project is for educational purposes (UTS 49275 Neural Networks and Fuzzy Logic).
 

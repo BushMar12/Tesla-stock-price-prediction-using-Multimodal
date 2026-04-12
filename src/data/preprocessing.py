@@ -96,7 +96,7 @@ class DataPreprocessor:
         df = df.replace([np.inf, -np.inf], np.nan)
         
         # Forward fill then backward fill
-        df = df.fillna(method='ffill').fillna(method='bfill')
+        df = df.ffill().bfill()
         
         # Drop any remaining NaN rows
         df = df.dropna()

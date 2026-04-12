@@ -156,13 +156,21 @@ class XGBoostRegressor:
     
     def fit(self, X: np.ndarray, y: np.ndarray):
         """Train the XGBoost model"""
-        from sklearn.ensemble import GradientBoostingRegressor
-        
+        from xgboost import XGBRegressor
+
         # Flatten sequences for XGBoost: (batch, seq, features) -> (batch, seq*features)
         if len(X.shape) == 3:
             X = X.reshape(X.shape[0], -1)
-        
-        self.model = GradientBoostingRegressor(**self.params)
+
+        self.model = XGBRegressor(
+            n_estimators=self.params["n_estimators"],
+            max_depth=self.params["max_depth"],
+            learning_rate=self.params["learning_rate"],
+            subsample=self.params["subsample"],
+            random_state=self.params["random_state"],
+            n_jobs=-1,
+            verbosity=0,
+        )
         self.model.fit(X, y)
         return self
     

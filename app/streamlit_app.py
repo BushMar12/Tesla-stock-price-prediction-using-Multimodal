@@ -427,7 +427,11 @@ def main():
                 save=False
             )
             df_with_indicators = calculate_all_indicators(df, add_targets=False)
-            sentiment_df = fetch_sentiment_data(df, use_real_data=False, save=False)
+            sentiment_df = fetch_sentiment_data(
+                df,
+                use_real_data=STREAMLIT_CONFIG["sentiment_use_real_data"],
+                save=False,
+            )
         except Exception as e:
             st.error(f"Error loading data: {e}")
             return
@@ -649,8 +653,10 @@ def main():
         st.subheader("🏆 Model Comparison: LSTM vs GRU vs XGBoost")
         
         if multi_model is None:
-            st.warning("Multi-model comparison not available. Please run `python train_comparison.py` first to train all models.")
-            st.code("python train_comparison.py", language="bash")
+            st.warning(
+                "Multi-model comparison not available. Run `python model_comparison.py` first to train LSTM, GRU, and XGBoost baselines."
+            )
+            st.code("python model_comparison.py", language="bash")
         else:
             st.success("All models loaded successfully!")
             

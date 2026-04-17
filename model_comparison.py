@@ -22,7 +22,7 @@ def main():
     """Train and compare multiple regression models"""
     print("=" * 60)
     print("Multi-Model Regression Training")
-    print("LSTM vs GRU vs XGBoost Comparison")
+    print("LSTM vs GRU vs Transformer vs XGBoost Comparison")
     print("Predicting Returns → Reconstructing Prices")
     print("=" * 60)
     
@@ -65,7 +65,7 @@ def main():
     input_size = X_train.shape[2]
     multi_model = MultiModelRegressor(input_size=input_size)
     
-    multi_model.train_all(X_train, y_train, X_val, y_val, epochs=100)
+    multi_model.train_all(X_train, y_train, X_val, y_val, epochs=200)
     
     # Step 3: Evaluate models (pass return_scaler and close_prices for price reconstruction)
     print("\n Step 3: Evaluating models...")

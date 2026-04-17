@@ -226,8 +226,8 @@ class NewsCollector:
 
 def generate_synthetic_sentiment(stock_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Generate synthetic sentiment data based on price movements.
-    This is used when real sentiment data is not available.
+    Generate synthetic sentiment data based on LAGGED price movements.
+    Uses yesterday's returns and rolling trends to avoid same-day information leakage.
     
     Args:
         stock_df: DataFrame with stock price data
@@ -237,12 +237,20 @@ def generate_synthetic_sentiment(stock_df: pd.DataFrame) -> pd.DataFrame:
     """
     df = stock_df.copy()
     
-    # Generate sentiment based on returns with some noise
     np.random.seed(42)
-    noise = np.random.normal(0, 0.1, len(df))
     
-    # Compound sentiment correlates with returns
-    df['sentiment_compound'] = np.tanh(df['returns'] * 10 + noise)
+    # Use LAGGED information only — no same-day return leakage
+    lagged_1d = df['returns'].shift(1).fillna(0)
+    lagged_5d_mean = df['returns'].rolling(5).mean().shift(1).fillna(0)
+    volatility_10d = df['returns'].rolling(10).std().shift(1).fillna(df['returns'].std())
+    
+    # Compound sentiment from lagged signals + independent noise
+    df['sentiment_compound'] = np.tanh(
+        0.25 * lagged_1d * 5 +                            # Yesterday's return
+        0.25 * lagged_5d_mean * 8 +                        # Weekly trend (lagged)
+        0.10 * np.tanh(-volatility_10d * 20) +             # High vol → negative sentiment
+        0.40 * np.random.normal(0, 0.25, len(df))          # Independent noise
+    )
     
     # Decompose into positive/negative/neutral
     df['sentiment_positive'] = np.clip(df['sentiment_compound'] + 0.5, 0, 1) / 2
@@ -250,7 +258,7 @@ def generate_synthetic_sentiment(stock_df: pd.DataFrame) -> pd.DataFrame:
     df['sentiment_neutral'] = 1 - df['sentiment_positive'] - df['sentiment_negative']
     df['news_count'] = np.random.randint(1, 20, len(df))
     
-    # Add some lagged effects
+    # Add lagged sentiment effects
     for lag in [1, 2, 3]:
         df[f'sentiment_compound_lag{lag}'] = df['sentiment_compound'].shift(lag)
     

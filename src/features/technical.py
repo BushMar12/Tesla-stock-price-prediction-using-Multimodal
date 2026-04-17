@@ -150,7 +150,7 @@ def add_price_patterns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_target_variables(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
-    """Add target variables for prediction"""
+    """Add target variables for prediction (single-horizon, backward compat)"""
     # Future price (regression target)
     df['Target_Price'] = df['close'].shift(-horizon)
     
@@ -160,6 +160,93 @@ def add_target_variables(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
     # Direction (binary classification: 0 = Down, 1 = Up)
     df['Target_Direction'] = (df['Target_Return'] > 0).astype(int)
     
+    return df
+
+
+def add_multi_day_targets(df: pd.DataFrame, horizons: list = None) -> pd.DataFrame:
+    """Add target returns for multiple prediction horizons.
+    
+    Args:
+        df: DataFrame with OHLCV data
+        horizons: List of prediction horizons in days (e.g. [1, 3, 5, 7])
+    
+    Returns:
+        DataFrame with Target_Return_Xd columns and Target_Direction (1-day)
+    """
+    from config import PREDICTION_HORIZONS
+    if horizons is None:
+        horizons = PREDICTION_HORIZONS
+    
+    for h in horizons:
+        df[f'Target_Return_{h}d'] = df['close'].pct_change(periods=h).shift(-h)
+
+    # Keep legacy columns pointing to 1-day horizon for backward compat
+    df['Target_Return'] = df[f'Target_Return_{horizons[0]}d']
+    df['Target_Price'] = df['close'].shift(-horizons[0])
+    df['Target_Direction'] = (df['Target_Return'] > 0).astype(int)
+    
+    return df
+
+
+def add_market_context(df: pd.DataFrame) -> pd.DataFrame:
+    """Add market context features: SPY (S&P 500) and VIX (Volatility Index)"""
+    import yfinance as yf
+    
+    start = df['date'].min().strftime('%Y-%m-%d')
+    end = df['date'].max().strftime('%Y-%m-%d')
+    
+    try:
+        spy = yf.download("SPY", start=start, end=end, progress=False)
+        if not spy.empty:
+            spy = spy.reset_index()
+            # Handle multi-level columns from yfinance
+            if isinstance(spy.columns, pd.MultiIndex):
+                spy.columns = [col[0] if col[1] == '' or col[1] == 'SPY' else col[0] for col in spy.columns]
+            spy['Date'] = pd.to_datetime(spy['Date']).dt.tz_localize(None)
+            spy = spy.rename(columns={'Date': 'date', 'Close': 'spy_close'})
+            spy['spy_return'] = spy['spy_close'].pct_change()
+            df = df.merge(spy[['date', 'spy_close', 'spy_return']], on='date', how='left')
+            df['tsla_vs_spy'] = df['returns'] - df['spy_return']  # Alpha
+            df[['spy_close', 'spy_return', 'tsla_vs_spy']] = df[['spy_close', 'spy_return', 'tsla_vs_spy']].ffill()
+        else:
+            print("Warning: SPY data empty, skipping market context")
+            df['spy_close'] = 0
+            df['spy_return'] = 0
+            df['tsla_vs_spy'] = 0
+    except Exception as e:
+        print(f"Warning: Could not fetch SPY data: {e}")
+        df['spy_close'] = 0
+        df['spy_return'] = 0
+        df['tsla_vs_spy'] = 0
+    
+    try:
+        vix = yf.download("^VIX", start=start, end=end, progress=False)
+        if not vix.empty:
+            vix = vix.reset_index()
+            if isinstance(vix.columns, pd.MultiIndex):
+                vix.columns = [col[0] if col[1] == '' or col[1] == '^VIX' else col[0] for col in vix.columns]
+            vix['Date'] = pd.to_datetime(vix['Date']).dt.tz_localize(None)
+            vix = vix.rename(columns={'Date': 'date', 'Close': 'vix'})
+            df = df.merge(vix[['date', 'vix']], on='date', how='left')
+            df['vix'] = df['vix'].ffill()
+        else:
+            print("Warning: VIX data empty, skipping")
+            df['vix'] = 20.0
+    except Exception as e:
+        print(f"Warning: Could not fetch VIX data: {e}")
+        df['vix'] = 20.0
+    
+    return df
+
+
+def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add calendar-based features"""
+    dates = pd.to_datetime(df['date'])
+    df['day_of_week'] = dates.dt.dayofweek / 4.0  # Normalize to [0, 1]
+    df['month_sin'] = np.sin(2 * np.pi * dates.dt.month / 12)
+    df['month_cos'] = np.cos(2 * np.pi * dates.dt.month / 12)
+    df['is_month_end'] = dates.dt.is_month_end.astype(int)
+    df['is_quarter_end'] = dates.dt.is_quarter_end.astype(int)
     return df
 
 
@@ -191,8 +278,12 @@ def calculate_all_indicators(df: pd.DataFrame, add_targets: bool = True) -> pd.D
     df = add_volatility_features(df)
     df = add_price_patterns(df)
     
+    # New: market context and calendar features
+    df = add_market_context(df)
+    df = add_calendar_features(df)
+    
     if add_targets:
-        df = add_target_variables(df)
+        df = add_multi_day_targets(df)
     
     print(f"Added {len(df.columns)} features")
     

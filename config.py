@@ -22,7 +22,8 @@ END_DATE = None  # None means today
 
 # Feature settings
 SEQUENCE_LENGTH = 60  # Number of days to look back
-PREDICTION_HORIZON = 1  # Days ahead to predict
+PREDICTION_HORIZON = 1  # Days ahead to predict (legacy, single-step)
+PREDICTION_HORIZONS = [1, 3, 5, 7]  # Multi-day prediction horizons
 
 # Technical indicators to use
 TECHNICAL_INDICATORS = [

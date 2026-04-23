@@ -434,6 +434,125 @@ def simulate_prediction(df: pd.DataFrame):
     }
 
 
+@st.cache_data(show_spinner=False)
+def compute_shap_explanation(
+    indicators_df: pd.DataFrame,
+    sentiment_df: pd.DataFrame,
+    max_train_samples: int = 1200,
+    max_eval_samples: int = 300
+):
+    """Compute SHAP values for next-day return using an XGBoost surrogate model."""
+    import shap
+    from xgboost import XGBRegressor
+    from src.features.technical import add_target_variables
+
+    df_shap = add_target_variables(indicators_df.copy(), horizon=1)
+
+    if sentiment_df is not None and not sentiment_df.empty:
+        sentiment = sentiment_df.copy()
+        if 'date' in sentiment.columns:
+            sentiment['date'] = pd.to_datetime(sentiment['date'])
+            df_shap['date'] = pd.to_datetime(df_shap['date'])
+            sentiment_cols = [col for col in sentiment.columns if col != 'date']
+            missing_sentiment_cols = [
+                col for col in sentiment_cols
+                if col not in df_shap.columns
+            ]
+            if missing_sentiment_cols:
+                df_shap = df_shap.merge(
+                    sentiment[['date'] + missing_sentiment_cols],
+                    on='date',
+                    how='left'
+                )
+
+    target_col = 'Target_Return'
+    target_exclusions = {
+        'Target_Return',
+        'Target_Price',
+        'Target_Direction',
+        'Target_Return_1d',
+        'Target_Return_3d',
+        'Target_Return_5d',
+        'Target_Return_7d',
+    }
+
+    numeric_df = df_shap.select_dtypes(include=[np.number])
+    numeric_df = numeric_df.replace([np.inf, -np.inf], np.nan)
+
+    if target_col not in numeric_df.columns:
+        raise ValueError("Target_Return column not found.")
+
+    feature_cols = [
+        col for col in numeric_df.columns
+        if col not in target_exclusions
+    ]
+
+    model_df = numeric_df[feature_cols + [target_col]].dropna()
+    model_df = model_df.loc[:, model_df.nunique(dropna=True) > 1]
+
+    if target_col not in model_df.columns:
+        raise ValueError("Target_Return column was removed while cleaning data.")
+
+    feature_cols = [col for col in model_df.columns if col != target_col]
+
+    if len(model_df) < 50 or len(feature_cols) < 2:
+        raise ValueError("Not enough clean feature rows to compute SHAP values.")
+
+    if len(model_df) > max_train_samples:
+        model_df = model_df.tail(max_train_samples)
+
+    X = model_df[feature_cols]
+    y = model_df[target_col]
+
+    model = XGBRegressor(
+        n_estimators=250,
+        max_depth=3,
+        learning_rate=0.05,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        objective='reg:squarederror',
+        random_state=42,
+        n_jobs=-1,
+        verbosity=0,
+    )
+    model.fit(X, y)
+
+    X_eval = X.tail(min(max_eval_samples, len(X)))
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_eval)
+
+    if isinstance(shap_values, list):
+        shap_values = shap_values[0]
+
+    shap_values = np.asarray(shap_values)
+
+    importance_df = pd.DataFrame({
+        'Feature': X_eval.columns,
+        'Mean |SHAP|': np.abs(shap_values).mean(axis=0),
+        'Mean SHAP': shap_values.mean(axis=0),
+    }).sort_values('Mean |SHAP|', ascending=False)
+
+    shap_long = pd.DataFrame(shap_values, columns=X_eval.columns)
+    shap_long['row_id'] = np.arange(len(X_eval))
+    shap_long = shap_long.melt(
+        id_vars='row_id',
+        var_name='Feature',
+        value_name='SHAP value'
+    )
+
+    feature_values = X_eval.reset_index(drop=True).copy()
+    feature_values['row_id'] = np.arange(len(X_eval))
+    feature_long = feature_values.melt(
+        id_vars='row_id',
+        var_name='Feature',
+        value_name='Feature value'
+    )
+
+    shap_long = shap_long.merge(feature_long, on=['row_id', 'Feature'])
+
+    return importance_df, shap_long, float(model.score(X, y)), len(X), len(X_eval)
+
+
 def main():
     """Main Streamlit app"""
     
@@ -490,7 +609,7 @@ def main():
     
     # Main content
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
-        ["Price Chart", "Technical Analysis", "Sentiment", "One-Day Prediction", "Multi-Day Forecast", "Model Comparison", "Correlation Analysis"]
+        ["Price Chart", "Technical Analysis", "Sentiment", "One-Day Prediction", "Multi-Day Forecast", "Model Comparison", "SHAP Explainability"]
     )
     
     with tab1:
@@ -767,7 +886,7 @@ def main():
         
         if multi_model is None:
             st.warning(
-                "Multi-model comparison not available. Run `python model_comparison.py` first to train LSTM, GRU, Transformer, and XGBoost baselines."
+                "Multi-model comparison not available. Run `python model_comparison.py` first to train LSTM, GRU, and XGBoost baselines."
             )
             st.code("python model_comparison.py", language="bash")
         else:
@@ -827,7 +946,7 @@ def main():
             predict_btn = st.button("🎯 Get Predictions from All Models", use_container_width=True)
             
             if predict_btn:
-                with st.spinner("Getting predictions from LSTM, GRU, Transformer, and XGBoost..."):
+                with st.spinner("Getting predictions from LSTM, GRU, and XGBoost..."):
                     predictions, current_price = get_multi_model_predictions(
                         multi_model, df, sentiment_df
                     )
@@ -896,72 +1015,97 @@ def main():
                 """)
     
     with tab7:
-        st.subheader("Feature Correlation with Next-Day Return")
-        
-        # Calculate correlations (need targets)
-        from src.features.technical import add_target_variables
-        df_corr = add_target_variables(df_with_indicators.copy(), horizon=1)
-        
-        # Select numeric columns
-        numeric_df = df_corr.select_dtypes(include=[np.number])
-        
-        # Drop columns that are constant or have all NaNs
-        numeric_df = numeric_df.dropna(axis=1, how='all')
-        
-        if 'Target_Return' in numeric_df.columns:
-            # Compute correlation with target
-            corr_with_target = numeric_df.corr()['Target_Return'].sort_values(ascending=False)
-            
-            # Remove the target itself and price-based targets that are overlapping
-            # Also remove Target_Price and Target_Direction if they exist
-            to_drop = ['Target_Return', 'Target_Price', 'Target_Direction', 'Target_Return_1d', 'Target_Return_3d', 'Target_Return_5d', 'Target_Return_7d']
-            corr_with_target = corr_with_target.drop(labels=[c for c in to_drop if c in corr_with_target.index])
-            
-            # Sort by absolute correlation to find top contributors
-            influential_features = corr_with_target.abs().sort_values(ascending=False)
-            
-            col1, col2 = st.columns(2)
+        st.subheader("SHAP Feature Importance for Next-Day Return")
+
+        try:
+            with st.spinner("Computing SHAP explanations..."):
+                importance_df, shap_long, surrogate_r2, n_train, n_eval = compute_shap_explanation(
+                    df_with_indicators,
+                    sentiment_df
+                )
+
+            col1, col2, col3 = st.columns(3)
             with col1:
-                st.markdown("**Top 10 Positively Correlated Features**")
-                st.dataframe(corr_with_target[corr_with_target > 0].head(10))
-            
+                st.metric("Surrogate Training Rows", f"{n_train:,}")
             with col2:
-                st.markdown("**Top 10 Negatively Correlated Features**")
-                # Showing most negative first
-                st.dataframe(corr_with_target[corr_with_target < 0].sort_values().head(10))
-                
-            # Heatmap of top 15 most influential features
-            st.markdown("---")
-            st.subheader("Correlation Heatmap: Top 15 Most Influential Features")
-            
-            # Get top 15 features by absolute correlation
-            top_abs_features = influential_features.head(15).index.tolist()
-            
-            # Include the target in the heatmap
-            heatmap_features = ['Target_Return'] + top_abs_features
-            
-            # Calculate correlation matrix for these features
-            corr_matrix = numeric_df[heatmap_features].corr()
-            
-            fig = px.imshow(
-                corr_matrix,
-                text_auto=".2f",
-                aspect="auto",
-                color_continuous_scale='RdBu_r',
-                range_color=[-1, 1],
-                title="Correlation Matrix (Target vs Top Features)"
+                st.metric("Explained Rows", f"{n_eval:,}")
+            with col3:
+                st.metric("Surrogate R2", f"{surrogate_r2:.3f}")
+
+            top_features = importance_df.head(15).copy()
+            top_features = top_features.sort_values('Mean |SHAP|', ascending=True)
+
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=top_features['Mean |SHAP|'],
+                y=top_features['Feature'],
+                orientation='h',
+                marker_color='#2a5298',
+                hovertemplate=(
+                    '<b>%{y}</b><br>'
+                    'Mean |SHAP|: %{x:.6f}<extra></extra>'
+                )
+            ))
+            fig.update_layout(
+                title='Top 15 Features by Mean Absolute SHAP Value',
+                xaxis_title='Mean absolute SHAP value',
+                yaxis_title='Feature',
+                height=650,
+                template='plotly_white'
             )
-            fig.update_layout(height=700)
             st.plotly_chart(fig, use_container_width=True)
-            
+
+            st.markdown("---")
+            st.subheader("Top SHAP Features")
+            display_df = importance_df.head(20).copy()
+            display_df['Mean |SHAP|'] = display_df['Mean |SHAP|'].map(lambda x: f"{x:.6f}")
+            display_df['Mean SHAP'] = display_df['Mean SHAP'].map(lambda x: f"{x:+.6f}")
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            st.subheader("SHAP Dependence View")
+            selected_feature = st.selectbox(
+                "Feature",
+                importance_df['Feature'].head(20).tolist()
+            )
+            feature_shap = shap_long[shap_long['Feature'] == selected_feature].copy()
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=feature_shap['Feature value'],
+                y=feature_shap['SHAP value'],
+                mode='markers',
+                marker=dict(
+                    color=feature_shap['SHAP value'],
+                    colorscale='RdBu',
+                    reversescale=True,
+                    size=7,
+                    opacity=0.75,
+                    colorbar=dict(title='SHAP')
+                ),
+                hovertemplate=(
+                    'Feature value: %{x:.6f}<br>'
+                    'SHAP value: %{y:.6f}<extra></extra>'
+                )
+            ))
+            fig.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig.update_layout(
+                title=f'SHAP Dependence: {selected_feature}',
+                xaxis_title=selected_feature,
+                yaxis_title='SHAP value',
+                height=500,
+                template='plotly_white'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
             st.info("""
-            **How to read this matrix:**
-            - **Positive Correlation (Red):** Values close to +1.0. When this indicator goes up, the next day's return tends to be positive.
-            - **Negative Correlation (Blue):** Values close to -1.0. When this indicator goes up, the next day's return tends to be negative.
-            - **Target_Return:** This is our primary prediction target. The first row/column shows how each feature directly relates to tomorrow's price movement.
+            This tab uses SHAP values from an XGBoost surrogate model trained on the engineered features to explain next-day return. Larger mean absolute SHAP values indicate features with stronger influence on the surrogate prediction. Positive SHAP values push the predicted return upward; negative values push it downward.
             """)
-        else:
-            st.warning("Target_Return column not found. Correlation analysis unavailable.")
+
+        except ImportError:
+            st.warning("SHAP is not installed. Install dependencies with: pip install -r requirements.txt")
+        except Exception as e:
+            st.warning(f"SHAP analysis unavailable: {e}")
     
     # Footer
     st.markdown("---")

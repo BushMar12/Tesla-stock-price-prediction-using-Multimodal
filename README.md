@@ -20,7 +20,7 @@ This project predicts Tesla (TSLA) stock prices using a **returns-based approach
 - **Sentiment Data**: News sentiment scores (synthetic or real)
 - **Derived Features**: Daily returns, price momentum, volatility
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```
 ├── app/
@@ -126,7 +126,7 @@ TRAINING_CONFIG = {
 }
 ```
 
-## 🖥️ GPU Support
+## GPU Support
 
 The project supports:
 - **CUDA** (NVIDIA GPUs)
@@ -140,7 +140,7 @@ print(torch.backends.mps.is_available())  # For Mac
 print(torch.cuda.is_available())          # For NVIDIA
 ```
 
-## 📊 Model Architecture
+## Model Architecture
 
 ### Multimodal fusion (`train.py`)
 Time-series branch (e.g. LSTM-based encoder in `time_series.py`), sentiment branch (`text_encoder.py`), optional cross-modal attention, then fusion MLPs with regression and direction-classification heads. See `src/models/fusion.py`.
@@ -160,7 +160,7 @@ Dense (1 output - scaled return)
 - **Library**: `xgboost.XGBRegressor`
 - Default hyperparameters in `XGBoostRegressor`: 400 estimators, max depth 4, learning rate 0.05, subsample 0.8
 
-## 📈 Metrics
+## Metrics
 
 - **RMSE** - Root Mean Square Error (in dollars)
 - **MAE** - Mean Absolute Error (in dollars)

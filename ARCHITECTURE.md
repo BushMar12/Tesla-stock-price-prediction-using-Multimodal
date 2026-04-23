@@ -75,11 +75,11 @@ The fused representation is passed to three heads:
 
 - a single-day return regression head
 - a multi-day return regression head for the configured horizons
-- a classification head for up/down direction
+- a classification head for down/neutral/up direction
 
 ## Training Layer
 
-The training loop uses AdamW, OneCycleLR, gradient clipping, and early stopping. The loss combines:
+The training loop uses AdamW, OneCycleLR, gradient clipping, and full fixed-epoch training. The loss combines:
 
 - Smooth L1 loss for 1-day return regression
 - Smooth L1 loss for multi-day return regression

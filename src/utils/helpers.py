@@ -86,12 +86,12 @@ def format_percentage(value: float) -> str:
 
 
 def get_direction_label(direction: int) -> str:
-    """Convert direction code to label (binary classification)"""
-    labels = {0: '📉 Down', 1: '📈 Up'}
+    """Convert direction code to label."""
+    labels = {0: '📉 Down', 1: '➡️ Neutral', 2: '📈 Up'}
     return labels.get(direction, 'Unknown')
 
 
 def get_direction_color(direction: int) -> str:
-    """Get color for direction (binary classification)"""
-    colors = {0: 'red', 1: 'green'}
+    """Get color for direction."""
+    colors = {0: 'red', 1: 'gray', 2: 'green'}
     return colors.get(direction, 'gray')

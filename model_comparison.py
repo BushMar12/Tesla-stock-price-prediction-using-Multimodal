@@ -10,12 +10,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.data.stock_data import fetch_stock_data
+from src.data.stock_data import load_stock_data
 from src.data.sentiment_data import fetch_sentiment_data
 from src.features.technical import calculate_all_indicators
 from src.data.preprocessing import DataPreprocessor
 from src.models.regression_models import MultiModelRegressor
-from config import MODELS_DIR, SENTIMENT_CONFIG
+from config import MODELS_DIR, RAW_DATA_DIR
 
 
 def main():
@@ -28,10 +28,15 @@ def main():
     
     # Step 1: Fetch and preprocess data
     print("\n Step 1: Fetching and preprocessing data...")
-    stock_df = fetch_stock_data(start_date="2010-06-29")
-    sentiment_df = fetch_sentiment_data(
-        stock_df, use_real_data=SENTIMENT_CONFIG["use_real_data_fetch"]
-    )
+    stock_df = load_stock_data()
+    
+    sentiment_path = RAW_DATA_DIR / "sentiment_data.csv"
+    if sentiment_path.exists():
+        sentiment_df = pd.read_csv(sentiment_path)
+        sentiment_df['date'] = pd.to_datetime(sentiment_df['date'])
+        print(f"Loaded cached sentiment data from {sentiment_path}")
+    else:
+        sentiment_df = fetch_sentiment_data(stock_df, use_real_data=False)
     indicators_df = calculate_all_indicators(stock_df)
     
     preprocessor = DataPreprocessor()

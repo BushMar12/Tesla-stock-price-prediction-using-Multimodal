@@ -234,16 +234,34 @@ class XGBoostRegressor:
             'max_depth': kwargs.get('max_depth', 4),
             'learning_rate': kwargs.get('learning_rate', 0.05),
             'subsample': kwargs.get('subsample', 0.8),
-            'random_state': 42
+            'random_state': kwargs.get('random_state', 42),
+            'n_jobs': kwargs.get('n_jobs', 1),
         }
+
+    @staticmethod
+    def _prepare_features(X: np.ndarray) -> np.ndarray:
+        """Flatten sequence data and hand XGBoost a native-friendly array."""
+        if len(X.shape) == 3:
+            X = X.reshape(X.shape[0], -1)
+
+        X = np.ascontiguousarray(X, dtype=np.float32)
+        if not np.isfinite(X).all():
+            raise ValueError("XGBoost input contains NaN or infinite values")
+        return X
+
+    @staticmethod
+    def _prepare_target(y: np.ndarray) -> np.ndarray:
+        y = np.ascontiguousarray(np.asarray(y).reshape(-1), dtype=np.float32)
+        if not np.isfinite(y).all():
+            raise ValueError("XGBoost target contains NaN or infinite values")
+        return y
     
     def fit(self, X: np.ndarray, y: np.ndarray):
         """Train the XGBoost model"""
         from xgboost import XGBRegressor
 
-        # Flatten sequences for XGBoost: (batch, seq, features) -> (batch, seq*features)
-        if len(X.shape) == 3:
-            X = X.reshape(X.shape[0], -1)
+        X = self._prepare_features(X)
+        y = self._prepare_target(y)
 
         self.model = XGBRegressor(
             n_estimators=self.params["n_estimators"],
@@ -251,7 +269,7 @@ class XGBoostRegressor:
             learning_rate=self.params["learning_rate"],
             subsample=self.params["subsample"],
             random_state=self.params["random_state"],
-            n_jobs=-1,
+            n_jobs=self.params["n_jobs"],
             verbosity=0,
         )
         self.model.fit(X, y)
@@ -259,8 +277,7 @@ class XGBoostRegressor:
     
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Make predictions"""
-        if len(X.shape) == 3:
-            X = X.reshape(X.shape[0], -1)
+        X = self._prepare_features(X)
         return self.model.predict(X)
     
     def __call__(self, X: np.ndarray) -> np.ndarray:
@@ -303,10 +320,9 @@ class MultiModelRegressor:
         y_val: np.ndarray,
         epochs: int = 200,
         batch_size: int = 32,
-        lr: float = 1e-3,
-        patience: int = 30
+        lr: float = 1e-3
     ) -> dict:
-        """Train a PyTorch model with early stopping (fair comparison)"""
+        """Train a PyTorch model for the full configured epoch count."""
         from torch.utils.data import TensorDataset, DataLoader
         
         # Convert to tensors
@@ -327,7 +343,6 @@ class MultiModelRegressor:
         )
         
         best_val_loss = float('inf')
-        patience_counter = 0
         history = {'train_loss': [], 'val_loss': []}
         
         print(f"  {'Epoch':<8} {'Train Loss':<15} {'Val Loss':<15} {'Status'}")
@@ -362,19 +377,11 @@ class MultiModelRegressor:
             status = ""
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                patience_counter = 0
                 status = "✓ Best"
-            else:
-                patience_counter += 1
             
             # Print progress every 10 epochs or first/last
             if epoch % 10 == 0 or epoch == epochs - 1 or status:
                 print(f"  {epoch+1:<8} {train_loss:<15.6f} {val_loss:<15.6f} {status}")
-            
-            # Early stopping
-            if patience_counter >= patience:
-                print(f"  Early stopping at epoch {epoch+1}")
-                break
         
         print(f"  {'-'*50}")
         print(f"  Best Val Loss: {best_val_loss:.6f}")

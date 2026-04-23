@@ -122,7 +122,6 @@ TRAINING_CONFIG = {
     "batch_size": 32,
     "learning_rate": 1e-4,
     "epochs": 200,
-    "early_stopping_patience": 30,
 }
 ```
 
@@ -165,13 +164,13 @@ Dense (1 output - scaled return)
 - **RMSE** - Root Mean Square Error (in dollars)
 - **MAE** - Mean Absolute Error (in dollars)
 - **MAPE** - Mean Absolute Percentage Error
-- **Direction Accuracy** - Correctly predicted Up/Down movements
+- **Direction Accuracy** - Correctly predicted Down/Neutral/Up movements, where Neutral is a next-day return within +/-0.5%
 
 ##  Tasks
 
 The system performs:
 1. **Regression**: Predict next-day closing price
-2. **Classification**: Predict price direction (Up/Down)
+2. **Classification**: Predict price direction (Down/Neutral/Up)
 
 ##  Usage Examples
 
@@ -223,4 +222,3 @@ Requires a trained fusion checkpoint from `train.py` (see `src/utils/helpers.py`
 ##  License
 
 This project is for educational purposes (UTS 49275 Neural Networks and Fuzzy Logic).
-

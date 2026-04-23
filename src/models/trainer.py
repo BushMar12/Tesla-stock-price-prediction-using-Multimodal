@@ -106,30 +106,6 @@ class CombinedLoss(nn.Module):
         }
 
 
-class EarlyStopping:
-    """Early stopping to prevent overfitting"""
-    
-    def __init__(self, patience: int = TRAINING_CONFIG['early_stopping_patience'], min_delta: float = 0):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.counter = 0
-        self.best_loss = None
-        self.early_stop = False
-    
-    def __call__(self, val_loss: float) -> bool:
-        if self.best_loss is None:
-            self.best_loss = val_loss
-        elif val_loss > self.best_loss - self.min_delta:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_loss = val_loss
-            self.counter = 0
-        
-        return self.early_stop
-
-
 class Trainer:
     """Trainer class for the multimodal model"""
     
@@ -160,7 +136,6 @@ class Trainer:
         self.scheduler = None
         
         self.criterion = CombinedLoss()
-        self.early_stopping = EarlyStopping()
         
         self.history = {
             'train_loss': [],
@@ -392,11 +367,6 @@ class Trainer:
             if val_metrics['loss'] < best_val_loss:
                 best_val_loss = val_metrics['loss']
                 self.save_model('best_model.pt')
-            
-            # Early stopping
-            if self.early_stopping(val_metrics['loss']):
-                print(f"Early stopping at epoch {epoch+1}")
-                break
         
         # Save final model
         self.save_model('final_model.pt')

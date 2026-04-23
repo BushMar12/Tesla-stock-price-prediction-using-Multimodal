@@ -7,6 +7,19 @@ from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
+from config import DIRECTION_RETURN_THRESHOLD
+
+
+def classify_direction_by_return(returns: pd.Series, threshold: float = DIRECTION_RETURN_THRESHOLD) -> pd.Series:
+    """Classify returns as 0=Down, 1=Neutral, 2=Up using a symmetric threshold."""
+    return pd.Series(
+        np.select(
+            [returns < -threshold, returns > threshold],
+            [0, 2],
+            default=1
+        ),
+        index=returns.index
+    ).astype(int)
 
 
 def add_moving_averages(df: pd.DataFrame) -> pd.DataFrame:
@@ -157,8 +170,8 @@ def add_target_variables(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
     # Future return (for scaling)
     df['Target_Return'] = df['close'].pct_change(periods=horizon).shift(-horizon)
     
-    # Direction (binary classification: 0 = Down, 1 = Up)
-    df['Target_Direction'] = (df['Target_Return'] > 0).astype(int)
+    # Direction classification: 0 = Down, 1 = Neutral, 2 = Up
+    df['Target_Direction'] = classify_direction_by_return(df['Target_Return'])
     
     return df
 
@@ -183,7 +196,7 @@ def add_multi_day_targets(df: pd.DataFrame, horizons: list = None) -> pd.DataFra
     # Keep legacy columns pointing to 1-day horizon for backward compat
     df['Target_Return'] = df[f'Target_Return_{horizons[0]}d']
     df['Target_Price'] = df['close'].shift(-horizons[0])
-    df['Target_Direction'] = (df['Target_Return'] > 0).astype(int)
+    df['Target_Direction'] = classify_direction_by_return(df['Target_Return'])
     
     return df
 

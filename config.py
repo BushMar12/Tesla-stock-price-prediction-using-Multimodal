@@ -24,6 +24,7 @@ END_DATE = None  # None means today
 SEQUENCE_LENGTH = 60  # Number of days to look back
 PREDICTION_HORIZON = 1  # Days ahead to predict (legacy, single-step)
 PREDICTION_HORIZONS = [1, 3, 5, 7]  # Multi-day prediction horizons
+DIRECTION_RETURN_THRESHOLD = 0.005  # 0.5%; neutral band for direction classification
 
 # Technical indicators to use
 TECHNICAL_INDICATORS = [
@@ -51,7 +52,7 @@ MODEL_CONFIG = {
     "fusion_dropout": 0.3,
     
     # Output
-    "num_classes": 2,  # Up, Down (binary classification)
+    "num_classes": 3,  # Down, Neutral, Up direction classes
 }
 
 # Training settings
@@ -59,7 +60,6 @@ TRAINING_CONFIG = {
     "batch_size": 32,
     "learning_rate": 1e-4,
     "epochs": 200,
-    "early_stopping_patience": 30,
     "train_split": 0.8,
     "val_split": 0.1,
     "test_split": 0.1,

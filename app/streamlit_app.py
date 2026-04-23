@@ -16,7 +16,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from config import STREAMLIT_CONFIG, STOCK_SYMBOL, MODELS_DIR, PREDICTION_HORIZONS
+from config import (
+    STREAMLIT_CONFIG, STOCK_SYMBOL, MODELS_DIR, PREDICTION_HORIZONS,
+    DIRECTION_RETURN_THRESHOLD
+)
 from src.data.stock_data import fetch_stock_data, get_latest_data
 from src.data.sentiment_data import fetch_sentiment_data, SentimentAnalyzer
 from src.features.technical import calculate_all_indicators
@@ -412,15 +415,20 @@ def simulate_prediction(df: pd.DataFrame):
     # Use recent momentum for simulation
     recent_returns = df['close'].pct_change().tail(5).mean()
     current_price = df['close'].iloc[-1]
+    neutral_band_pct = DIRECTION_RETURN_THRESHOLD * 100
     
-    if recent_returns > 0:
-        direction = 1  # Up
-        probs = [0.3, 0.7]
-        predicted_change = np.random.uniform(0.5, 3)
-    else:
+    if recent_returns > DIRECTION_RETURN_THRESHOLD:
+        direction = 2  # Up
+        probs = [0.15, 0.25, 0.60]
+        predicted_change = np.random.uniform(neutral_band_pct, 3)
+    elif recent_returns < -DIRECTION_RETURN_THRESHOLD:
         direction = 0  # Down
-        probs = [0.7, 0.3]
-        predicted_change = np.random.uniform(-3, -0.5)
+        probs = [0.60, 0.25, 0.15]
+        predicted_change = np.random.uniform(-3, -neutral_band_pct)
+    else:
+        direction = 1  # Neutral
+        probs = [0.20, 0.60, 0.20]
+        predicted_change = np.random.uniform(-neutral_band_pct, neutral_band_pct)
     
     predicted_price = current_price * (1 + predicted_change / 100)
     
@@ -646,7 +654,7 @@ def main():
             # Direction Prediction (Classification)
             st.subheader("📊 Direction Prediction (Classification)")
             
-            direction_labels = ['📉 DOWN', '📈 UP']
+            direction_labels = ['📉 DOWN', '➡️ NEUTRAL', '📈 UP']
             
             direction = prediction['direction']
             confidence = prediction['confidence']
@@ -659,15 +667,13 @@ def main():
             # Probability bars
             st.subheader("Direction Probabilities")
             
-            p_col1, p_col2 = st.columns(2)
+            probability_labels = ["Down", "Neutral", "Up"]
+            p_cols = st.columns(len(probability_labels))
             
-            with p_col1:
-                st.metric("Down", f"{probs[0]*100:.1f}%")
-                st.progress(float(probs[0]))
-            
-            with p_col2:
-                st.metric("Up", f"{probs[1]*100:.1f}%")
-                st.progress(float(probs[1]))
+            for prob_col, label, prob in zip(p_cols, probability_labels, probs):
+                with prob_col:
+                    st.metric(label, f"{prob*100:.1f}%")
+                    st.progress(float(prob))
             
             # Warning
             st.warning("""

@@ -105,7 +105,12 @@ def predict_next_day():
         multi_day_scaled = outputs['multi_regression'].cpu().numpy()[0]
     
     # Print results
-    next_label = "📈 UP" if direction == 1 else "📉 DOWN"
+    direction_labels = {
+        0: "📉 DOWN",
+        1: "➡️ NEUTRAL",
+        2: "📈 UP",
+    }
+    next_label = direction_labels.get(direction, "UNKNOWN")
 
     print("\n" + "=" * 60)
     print("PREDICTION RESULTS")

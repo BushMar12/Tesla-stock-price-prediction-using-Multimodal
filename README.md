@@ -1,6 +1,6 @@
 # Tesla Stock Price Prediction Using Multimodal Deep Learning
 
-A comprehensive stock price prediction system that combines time-series analysis with sentiment data using a **multimodal fusion** model (PyTorch), plus **standalone LSTM, GRU, and XGBoost** baselines for comparison.
+A comprehensive stock price prediction system that combines time-series analysis with sentiment data using a **multimodal fusion** model (PyTorch), plus **standalone LSTM, GRU, Transformer, and XGBoost** baselines for comparison.
 
 ![Training History](training_history.png)
 
@@ -8,11 +8,11 @@ A comprehensive stock price prediction system that combines time-series analysis
 
 This project predicts Tesla (TSLA) stock prices using a **returns-based approach**:
 1. Predicts daily percentage returns (more stationary than raw prices)
-2. Reconstructs actual prices: `predicted_price = today_close × (1 + predicted_return)`
+2. Reconstructs actual prices: `predicted_price = today_close * (1 + predicted_return)`
 
 ### Models Implemented
-- **Multimodal fusion** (`train.py`) — time-series encoder + sentiment encoder + optional cross-modal attention (`src/models/fusion.py`)
-- **LSTM / GRU / XGBoost** (`model_comparison.py`) — separate bidirectional recurrent regressors and **XGBoost** (`xgboost.XGBRegressor`) on flattened sequences
+- **Multimodal fusion** (`train.py`) - time-series encoder + sentiment encoder + optional cross-modal attention (`src/models/fusion.py`)
+- **LSTM / GRU / Transformer / XGBoost** (`model_comparison.py`) - standalone sequence regressors plus **XGBoost** (`xgboost.XGBRegressor`) on flattened sequences
 
 ### Features Used
 - **Price Data**: OHLCV (Open, High, Low, Close, Volume)
@@ -42,17 +42,17 @@ This project predicts Tesla (TSLA) stock prices using a **returns-based approach
 │   │   ├── fusion.py         # Multimodal fusion + attention
 │   │   ├── time_series.py    # Time-series encoder
 │   │   ├── text_encoder.py   # Sentiment encoders
-│   │   ├── regression_models.py  # Standalone LSTM, GRU, XGBoost
+│   │   ├── regression_models.py  # Standalone LSTM, GRU, Transformer, XGBoost
 │   │   └── trainer.py        # Training loop for fusion model
 │   └── utils/                # Helper functions
 ├── config.py                 # Configuration settings
 ├── train.py                  # Train multimodal fusion model
-├── model_comparison.py       # Train & compare LSTM, GRU, XGBoost
+├── model_comparison.py       # Train & compare LSTM, GRU, Transformer, XGBoost
 ├── predict.py                # Prediction script (fusion checkpoint)
 └── requirements.txt          # Dependencies
 ```
 
-##  Quick Start
+## Quick Start
 
 ### 1. Installation
 
@@ -75,9 +75,11 @@ pip install -r requirements.txt
 # Multimodal fusion model (saved under models/, e.g. best_model.pt)
 python train.py
 
-# LSTM vs GRU vs XGBoost baselines (saves models + model_comparison.csv)
+# LSTM vs GRU vs Transformer vs XGBoost baselines (saves models + model_comparison.csv)
 python model_comparison.py
 ```
+
+Note: the checked-in `models/model_comparison.csv` may only reflect previously completed baseline runs. Rerun `python model_comparison.py` to regenerate the comparison table with every currently enabled baseline.
 
 ### 3. Run Streamlit Dashboard
 
@@ -85,9 +87,11 @@ python model_comparison.py
 streamlit run app/streamlit_app.py
 ```
 
-The app uses `STREAMLIT_CONFIG["sentiment_use_real_data"]` (default **false**) so the dashboard loads quickly without RSS/network sentiment fetching. Training scripts use `SENTIMENT_CONFIG["use_real_data_fetch"]` instead (default **true**).
+The app uses `STREAMLIT_CONFIG["sentiment_use_real_data"]` (default **false**) so the dashboard loads quickly without RSS/network sentiment fetching. Training scripts use `SENTIMENT_CONFIG["use_real_data_fetch"]` as well (default **false**).
 
-##  Configuration
+Important sentiment caveat: live RSS mode only fetches currently available headlines, so long historical runs contain mostly neutral-filled sentiment for older dates. For reproducible coursework experiments across the full historical range, synthetic sentiment is usually the clearer choice unless you add a dated historical news source.
+
+## Configuration
 
 Edit `config.py` to customize:
 
@@ -96,11 +100,13 @@ Edit `config.py` to customize:
 STOCK_SYMBOL = "TSLA"
 START_DATE = "2010-06-29"
 SEQUENCE_LENGTH = 60  # Look-back window (days)
+USE_MARKET_CONTEXT = True  # Add SPY/VIX features when available
+MARKET_CONTEXT_CACHE = True  # Prefer cached SPY/VIX files under data/raw/
 
 # Align sentiment source across train.py, model_comparison.py, predict.py
 SENTIMENT_CONFIG = {
     ...
-    "use_real_data_fetch": True,   # False = synthetic only (faster, offline-friendly)
+    "use_real_data_fetch": False,  # False = synthetic only (faster, offline-friendly)
 }
 
 # Dashboard: synthetic sentiment by default
@@ -122,7 +128,6 @@ TRAINING_CONFIG = {
     "batch_size": 32,
     "learning_rate": 1e-4,
     "epochs": 200,
-    "early_stopping_patience": 30,
 }
 ```
 
@@ -140,21 +145,23 @@ print(torch.backends.mps.is_available())  # For Mac
 print(torch.cuda.is_available())          # For NVIDIA
 ```
 
-## 📊 Model Architecture
+## Model Architecture
 
 ### Multimodal fusion (`train.py`)
 Time-series branch (e.g. LSTM-based encoder in `time_series.py`), sentiment branch (`text_encoder.py`), optional cross-modal attention, then fusion MLPs with regression and direction-classification heads. See `src/models/fusion.py`.
 
-### Standalone LSTM / GRU (`model_comparison.py`)
+### Standalone LSTM / GRU / Transformer (`model_comparison.py`)
 ```
-Input (60 timesteps × N features)
-    ↓
+Input (60 timesteps x N features)
+    |
 Bidirectional LSTM/GRU (128 hidden, 2 layers)
-    ↓
+    |
 Dropout (0.2)
-    ↓
+    |
 Dense (1 output - scaled return)
 ```
+
+The Transformer baseline uses positional encoding and a Transformer encoder over the same sequence inputs.
 
 ### XGBoost (comparison script)
 - **Library**: `xgboost.XGBRegressor`
@@ -165,15 +172,15 @@ Dense (1 output - scaled return)
 - **RMSE** - Root Mean Square Error (in dollars)
 - **MAE** - Mean Absolute Error (in dollars)
 - **MAPE** - Mean Absolute Percentage Error
-- **Direction Accuracy** - Correctly predicted Up/Down movements
+- **Direction Accuracy** - Correctly predicted Down/Neutral/Up movements, where Neutral is a next-day return within +/-0.5%
 
-##  Tasks
+## Tasks
 
 The system performs:
 1. **Regression**: Predict next-day closing price
-2. **Classification**: Predict price direction (Up/Down)
+2. **Classification**: Predict price direction (Down/Neutral/Up)
 
-##  Usage Examples
+## Usage Examples
 
 ### Load comparison models after `model_comparison.py`
 
@@ -223,4 +230,3 @@ Requires a trained fusion checkpoint from `train.py` (see `src/utils/helpers.py`
 ## License
 
 This project is for educational purposes (UTS 49275 Neural Networks and Fuzzy Logic).
-

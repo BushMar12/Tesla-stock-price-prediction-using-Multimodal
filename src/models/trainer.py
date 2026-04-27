@@ -13,7 +13,7 @@ import sys
 from typing import Optional
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from config import TRAINING_CONFIG, MODELS_DIR
+from config import TRAINING_CONFIG, MODELS_DIR, PREDICTION_HORIZONS
 from src.models.fusion import create_model
 
 
@@ -25,12 +25,14 @@ class StockDataset(Dataset):
         X_price: np.ndarray,
         X_sentiment: Optional[np.ndarray],
         y_reg: np.ndarray,
-        y_cls: np.ndarray
+        y_cls: np.ndarray,
+        y_multi_reg: Optional[np.ndarray] = None
     ):
         self.X_price = torch.FloatTensor(X_price)
         self.X_sentiment = torch.FloatTensor(X_sentiment) if X_sentiment is not None else None
         self.y_reg = torch.FloatTensor(y_reg)
         self.y_cls = torch.LongTensor(y_cls)
+        self.y_multi_reg = torch.FloatTensor(y_multi_reg) if y_multi_reg is not None else None
     
     def __len__(self):
         return len(self.y_reg)
@@ -45,67 +47,63 @@ class StockDataset(Dataset):
         if self.X_sentiment is not None:
             item['X_sentiment'] = self.X_sentiment[idx]
         
+        if self.y_multi_reg is not None:
+            item['y_multi_reg'] = self.y_multi_reg[idx]
+        
         return item
 
 
 class CombinedLoss(nn.Module):
-    """Combined loss for regression and classification"""
+    """Combined loss for regression (single + multi-day) and classification"""
     
     def __init__(
         self,
         regression_weight: float = TRAINING_CONFIG['regression_weight'],
-        classification_weight: float = TRAINING_CONFIG['classification_weight']
+        classification_weight: float = TRAINING_CONFIG['classification_weight'],
+        multi_day_weight: float = 0.05
     ):
         super().__init__()
         
         self.regression_weight = regression_weight
         self.classification_weight = classification_weight
+        self.multi_day_weight = multi_day_weight
         
         self.mse_loss = nn.MSELoss()
+        self.huber_loss = nn.SmoothL1Loss()  # More robust to outliers
         self.ce_loss = nn.CrossEntropyLoss()
     
-    def forward(self, outputs: dict, y_reg: torch.Tensor, y_cls: torch.Tensor) -> dict:
+    def forward(self, outputs: dict, y_reg: torch.Tensor, y_cls: torch.Tensor,
+                y_multi_reg: torch.Tensor = None) -> dict:
         """
         Calculate combined loss.
         
         Returns:
             Dict with individual and combined losses
         """
-        reg_loss = self.mse_loss(outputs['regression'], y_reg)
+        reg_loss = self.huber_loss(outputs['regression'], y_reg)
         cls_loss = self.ce_loss(outputs['classification'], y_cls)
         
         total_loss = (self.regression_weight * reg_loss + 
                       self.classification_weight * cls_loss)
         
+        # Multi-day regression loss
+        multi_reg_loss = torch.tensor(0.0, device=y_reg.device)
+        if y_multi_reg is not None and 'multi_regression' in outputs:
+            # Mask NaN values in multi-day targets
+            valid_mask = ~torch.isnan(y_multi_reg)
+            if valid_mask.any():
+                multi_reg_loss = self.huber_loss(
+                    outputs['multi_regression'][valid_mask],
+                    y_multi_reg[valid_mask]
+                )
+                total_loss = total_loss + self.multi_day_weight * multi_reg_loss
+        
         return {
             'total': total_loss,
             'regression': reg_loss,
-            'classification': cls_loss
+            'classification': cls_loss,
+            'multi_regression': multi_reg_loss
         }
-
-
-class EarlyStopping:
-    """Early stopping to prevent overfitting"""
-    
-    def __init__(self, patience: int = TRAINING_CONFIG['early_stopping_patience'], min_delta: float = 0):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.counter = 0
-        self.best_loss = None
-        self.early_stop = False
-    
-    def __call__(self, val_loss: float) -> bool:
-        if self.best_loss is None:
-            self.best_loss = val_loss
-        elif val_loss > self.best_loss - self.min_delta:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_loss = val_loss
-            self.counter = 0
-        
-        return self.early_stop
 
 
 class Trainer:
@@ -126,6 +124,7 @@ class Trainer:
         else:
             self.device = torch.device('cpu')
         self.model = model.to(self.device)
+        self.learning_rate = learning_rate
         
         self.optimizer = optim.AdamW(
             self.model.parameters(),
@@ -133,15 +132,10 @@ class Trainer:
             weight_decay=1e-5
         )
         
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer,
-            mode='min',
-            factor=0.5,
-            patience=5
-        )
+        # Scheduler will be set in fit() once we know the number of steps
+        self.scheduler = None
         
         self.criterion = CombinedLoss()
-        self.early_stopping = EarlyStopping()
         
         self.history = {
             'train_loss': [],
@@ -169,15 +163,22 @@ class Trainer:
                 X_sentiment = X_sentiment.to(self.device)
             y_reg = batch['y_reg'].to(self.device)
             y_cls = batch['y_cls'].to(self.device)
+            y_multi_reg = batch.get('y_multi_reg')
+            if y_multi_reg is not None:
+                y_multi_reg = y_multi_reg.to(self.device)
             
             self.optimizer.zero_grad()
             
             outputs = self.model(X_price, X_sentiment)
-            losses = self.criterion(outputs, y_reg, y_cls)
+            losses = self.criterion(outputs, y_reg, y_cls, y_multi_reg)
             
             losses['total'].backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
+            
+            # Step the OneCycleLR scheduler per batch (if active)
+            if self.scheduler is not None:
+                self.scheduler.step()
             
             total_loss += losses['total'].item()
             total_reg_loss += losses['regression'].item()
@@ -218,9 +219,12 @@ class Trainer:
                 X_sentiment = X_sentiment.to(self.device)
             y_reg = batch['y_reg'].to(self.device)
             y_cls = batch['y_cls'].to(self.device)
+            y_multi_reg = batch.get('y_multi_reg')
+            if y_multi_reg is not None:
+                y_multi_reg = y_multi_reg.to(self.device)
             
             outputs = self.model(X_price, X_sentiment)
-            losses = self.criterion(outputs, y_reg, y_cls)
+            losses = self.criterion(outputs, y_reg, y_cls, y_multi_reg)
             
             total_loss += losses['total'].item()
             total_reg_loss += losses['regression'].item()
@@ -307,18 +311,28 @@ class Trainer:
             train_data['X_price'],
             train_data['X_sentiment'],
             train_data['y_reg'],
-            train_data['y_cls']
+            train_data['y_cls'],
+            train_data.get('y_multi_reg')
         )
         
         val_dataset = StockDataset(
             val_data['X_price'],
             val_data['X_sentiment'],
             val_data['y_reg'],
-            val_data['y_cls']
+            val_data['y_cls'],
+            val_data.get('y_multi_reg')
         )
         
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        
+        # Set up OneCycleLR scheduler
+        self.scheduler = optim.lr_scheduler.OneCycleLR(
+            self.optimizer,
+            max_lr=self.learning_rate * 10,
+            epochs=epochs,
+            steps_per_epoch=len(train_loader)
+        )
         
         best_val_loss = float('inf')
         
@@ -333,9 +347,6 @@ class Trainer:
             
             # Evaluate
             val_metrics = self.evaluate(val_loader)
-            
-            # Update learning rate
-            self.scheduler.step(val_metrics['loss'])
             
             # Save history
             self.history['train_loss'].append(train_metrics['loss'])
@@ -356,11 +367,6 @@ class Trainer:
             if val_metrics['loss'] < best_val_loss:
                 best_val_loss = val_metrics['loss']
                 self.save_model('best_model.pt')
-            
-            # Early stopping
-            if self.early_stopping(val_metrics['loss']):
-                print(f"Early stopping at epoch {epoch+1}")
-                break
         
         # Save final model
         self.save_model('final_model.pt')
@@ -387,13 +393,33 @@ class Trainer:
         print(f"Model loaded from {path}")
 
 
-def train_model(splits: dict, return_scaler=None) -> tuple:
+def _update_preprocessing_metadata(**updates):
+    """Persist training-mode metadata alongside preprocessing metadata."""
+    metadata_path = MODELS_DIR / 'preprocessing_metadata.pkl'
+    if not metadata_path.exists():
+        return
+
+    metadata = joblib.load(metadata_path)
+    metadata.update(updates)
+    joblib.dump(metadata, metadata_path)
+
+
+def train_model(
+    splits: dict,
+    return_scaler=None,
+    use_cross_attention: bool = True,
+    training_mode: str = "current",
+    use_sentiment: bool = True
+) -> tuple:
     """
     Train the multimodal model.
     
     Args:
         splits: Dict with train/val/test data splits
         return_scaler: Scaler for inverse transforming returns to actual values
+        use_cross_attention: Whether the fusion model should use cross-attention
+        training_mode: Human-readable training mode saved with metadata
+        use_sentiment: Whether this run intentionally uses sentiment features
     
     Returns:
         Tuple of (trained model, trainer, history)
@@ -405,11 +431,20 @@ def train_model(splits: dict, return_scaler=None) -> tuple:
     
     print(f"Time-series features: {ts_input_size}")
     print(f"Sentiment features: {sentiment_input_size}")
+    print(f"Use sentiment: {use_sentiment and sentiment_input_size > 0}")
+    print(f"Use cross-attention: {use_cross_attention and sentiment_input_size > 0}")
     
     # Create model
     model = create_model(
         ts_input_size=ts_input_size,
-        sentiment_input_size=sentiment_input_size
+        sentiment_input_size=sentiment_input_size,
+        use_cross_attention=use_cross_attention
+    )
+
+    _update_preprocessing_metadata(
+        training_mode=training_mode,
+        use_sentiment=use_sentiment and sentiment_input_size > 0,
+        use_cross_attention=use_cross_attention and sentiment_input_size > 0,
     )
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -430,7 +465,8 @@ def train_model(splits: dict, return_scaler=None) -> tuple:
         splits['test']['X_price'],
         splits['test']['X_sentiment'],
         splits['test']['y_reg'],
-        splits['test']['y_cls']
+        splits['test']['y_cls'],
+        splits['test'].get('y_multi_reg')
     )
     test_loader = DataLoader(test_dataset, batch_size=TRAINING_CONFIG['batch_size'])
     
@@ -471,25 +507,29 @@ if __name__ == "__main__":
     seq_len = 20
     ts_features = 50
     sentiment_features = 8
+    n_horizons = len(PREDICTION_HORIZONS)
     
     dummy_splits = {
         'train': {
             'X_price': np.random.randn(n_samples, seq_len, ts_features).astype(np.float32),
             'X_sentiment': np.random.randn(n_samples, seq_len, sentiment_features).astype(np.float32),
             'y_reg': np.random.randn(n_samples).astype(np.float32) * 100 + 200,
-            'y_cls': np.random.randint(0, 3, n_samples)
+            'y_multi_reg': np.random.randn(n_samples, n_horizons).astype(np.float32),
+            'y_cls': np.random.randint(0, 2, n_samples)
         },
         'val': {
             'X_price': np.random.randn(n_samples//4, seq_len, ts_features).astype(np.float32),
             'X_sentiment': np.random.randn(n_samples//4, seq_len, sentiment_features).astype(np.float32),
             'y_reg': np.random.randn(n_samples//4).astype(np.float32) * 100 + 200,
-            'y_cls': np.random.randint(0, 3, n_samples//4)
+            'y_multi_reg': np.random.randn(n_samples//4, n_horizons).astype(np.float32),
+            'y_cls': np.random.randint(0, 2, n_samples//4)
         },
         'test': {
             'X_price': np.random.randn(n_samples//4, seq_len, ts_features).astype(np.float32),
             'X_sentiment': np.random.randn(n_samples//4, seq_len, sentiment_features).astype(np.float32),
             'y_reg': np.random.randn(n_samples//4).astype(np.float32) * 100 + 200,
-            'y_cls': np.random.randint(0, 3, n_samples//4)
+            'y_multi_reg': np.random.randn(n_samples//4, n_horizons).astype(np.float32),
+            'y_cls': np.random.randint(0, 2, n_samples//4)
         }
     }
     

@@ -4,9 +4,28 @@ Technical indicators calculation for stock data
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from typing import Optional
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
+from config import (
+    DIRECTION_RETURN_THRESHOLD,
+    MARKET_CONTEXT_CACHE,
+    RAW_DATA_DIR,
+    USE_MARKET_CONTEXT,
+)
+
+
+def classify_direction_by_return(returns: pd.Series, threshold: float = DIRECTION_RETURN_THRESHOLD) -> pd.Series:
+    """Classify returns as 0=Down, 1=Neutral, 2=Up using a symmetric threshold."""
+    return pd.Series(
+        np.select(
+            [returns < -threshold, returns > threshold],
+            [0, 2],
+            default=1
+        ),
+        index=returns.index
+    ).astype(int)
 
 
 def add_moving_averages(df: pd.DataFrame) -> pd.DataFrame:
@@ -150,16 +169,147 @@ def add_price_patterns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_target_variables(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
-    """Add target variables for prediction"""
+    """Add target variables for prediction (single-horizon, backward compat)"""
     # Future price (regression target)
     df['Target_Price'] = df['close'].shift(-horizon)
     
     # Future return (for scaling)
     df['Target_Return'] = df['close'].pct_change(periods=horizon).shift(-horizon)
     
-    # Direction (binary classification: 0 = Down, 1 = Up)
-    df['Target_Direction'] = (df['Target_Return'] > 0).astype(int)
+    # Direction classification: 0 = Down, 1 = Neutral, 2 = Up
+    df['Target_Direction'] = classify_direction_by_return(df['Target_Return'])
     
+    return df
+
+
+def add_multi_day_targets(df: pd.DataFrame, horizons: list = None) -> pd.DataFrame:
+    """Add target returns for multiple prediction horizons.
+    
+    Args:
+        df: DataFrame with OHLCV data
+        horizons: List of prediction horizons in days (e.g. [1, 3, 5, 7])
+    
+    Returns:
+        DataFrame with Target_Return_Xd columns and Target_Direction (1-day)
+    """
+    from config import PREDICTION_HORIZONS
+    if horizons is None:
+        horizons = PREDICTION_HORIZONS
+    
+    for h in horizons:
+        df[f'Target_Return_{h}d'] = df['close'].pct_change(periods=h).shift(-h)
+
+    # Keep legacy columns pointing to 1-day horizon for backward compat
+    df['Target_Return'] = df[f'Target_Return_{horizons[0]}d']
+    df['Target_Price'] = df['close'].shift(-horizons[0])
+    df['Target_Direction'] = classify_direction_by_return(df['Target_Return'])
+    
+    return df
+
+
+def _load_or_fetch_market_close(
+    symbol: str,
+    output_col: str,
+    cache_name: str,
+    start: str,
+    end: str
+) -> Optional[pd.DataFrame]:
+    """Load market close data from cache, falling back to Yahoo Finance."""
+    cache_path = RAW_DATA_DIR / cache_name
+
+    if MARKET_CONTEXT_CACHE and cache_path.exists():
+        cached = pd.read_csv(cache_path)
+        if {'date', output_col}.issubset(cached.columns):
+            cached['date'] = pd.to_datetime(cached['date'])
+            print(f"Loaded cached {symbol} market context from {cache_path}")
+            return cached[['date', output_col]]
+        print(f"Warning: Ignoring invalid {symbol} market context cache at {cache_path}")
+
+    try:
+        import yfinance as yf
+
+        market_df = yf.download(symbol, start=start, end=end, progress=False)
+        if market_df.empty:
+            return None
+
+        market_df = market_df.reset_index()
+        if isinstance(market_df.columns, pd.MultiIndex):
+            market_df.columns = [
+                col[0] if col[1] == '' or col[1] == symbol else col[0]
+                for col in market_df.columns
+            ]
+
+        market_df['Date'] = pd.to_datetime(market_df['Date']).dt.tz_localize(None)
+        market_df = market_df.rename(columns={'Date': 'date', 'Close': output_col})
+        market_df = market_df[['date', output_col]]
+
+        if MARKET_CONTEXT_CACHE:
+            market_df.to_csv(cache_path, index=False)
+            print(f"Saved {symbol} market context to {cache_path}")
+
+        return market_df
+    except Exception as e:
+        print(f"Warning: Could not fetch {symbol} data: {e}")
+        return None
+
+
+def add_market_context(df: pd.DataFrame) -> pd.DataFrame:
+    """Add market context features: SPY (S&P 500) and VIX (Volatility Index)."""
+    if not USE_MARKET_CONTEXT:
+        df['spy_close'] = 0
+        df['spy_return'] = 0
+        df['tsla_vs_spy'] = 0
+        df['vix'] = 20.0
+        return df
+
+    start = df['date'].min().strftime('%Y-%m-%d')
+    end = df['date'].max().strftime('%Y-%m-%d')
+
+    spy = _load_or_fetch_market_close(
+        symbol="SPY",
+        output_col="spy_close",
+        cache_name="SPY_market_context.csv",
+        start=start,
+        end=end
+    )
+    if spy is not None:
+        spy['spy_return'] = spy['spy_close'].pct_change()
+        df = df.merge(spy[['date', 'spy_close', 'spy_return']], on='date', how='left')
+        df['tsla_vs_spy'] = df['returns'] - df['spy_return']  # Alpha
+        df[['spy_close', 'spy_return', 'tsla_vs_spy']] = (
+            df[['spy_close', 'spy_return', 'tsla_vs_spy']].ffill().fillna(0)
+        )
+    else:
+        print("Warning: SPY data unavailable, using neutral market context")
+        df['spy_close'] = 0
+        df['spy_return'] = 0
+        df['tsla_vs_spy'] = 0
+
+    vix = _load_or_fetch_market_close(
+        symbol="^VIX",
+        output_col="vix",
+        cache_name="VIX_market_context.csv",
+        start=start,
+        end=end
+    )
+    if vix is not None:
+        df = df.merge(vix[['date', 'vix']], on='date', how='left')
+        df['vix'] = df['vix'].ffill().fillna(20.0)
+    else:
+        print("Warning: VIX data unavailable, using neutral market context")
+        df['vix'] = 20.0
+
+    return df
+
+
+def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add calendar-based features"""
+    dates = pd.to_datetime(df['date'])
+    df['day_of_week'] = dates.dt.dayofweek / 4.0  # Normalize to [0, 1]
+    df['month_sin'] = np.sin(2 * np.pi * dates.dt.month / 12)
+    df['month_cos'] = np.cos(2 * np.pi * dates.dt.month / 12)
+    df['is_month_end'] = dates.dt.is_month_end.astype(int)
+    df['is_quarter_end'] = dates.dt.is_quarter_end.astype(int)
     return df
 
 
@@ -191,8 +341,12 @@ def calculate_all_indicators(df: pd.DataFrame, add_targets: bool = True) -> pd.D
     df = add_volatility_features(df)
     df = add_price_patterns(df)
     
+    # New: market context and calendar features
+    df = add_market_context(df)
+    df = add_calendar_features(df)
+    
     if add_targets:
-        df = add_target_variables(df)
+        df = add_multi_day_targets(df)
     
     print(f"Added {len(df.columns)} features")
     

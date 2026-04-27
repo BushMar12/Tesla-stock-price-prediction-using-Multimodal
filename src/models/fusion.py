@@ -8,53 +8,56 @@ from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from config import MODEL_CONFIG
+from config import MODEL_CONFIG, PREDICTION_HORIZONS
 from src.models.time_series import TimeSeriesEncoder
 from src.models.text_encoder import SentimentEncoder, TemporalSentimentEncoder
 
 
 class CrossModalAttention(nn.Module):
-    """Cross-modal attention between time-series and sentiment features"""
+    """Cross-modal attention between time-series sequence and sentiment features.
     
-    def __init__(self, ts_dim: int, sentiment_dim: int, hidden_dim: int):
+    Fixed: Now operates on full temporal sequences instead of single vectors,
+    avoiding the degenerate scalar-softmax problem.
+    """
+    
+    def __init__(self, ts_dim: int, sentiment_dim: int, hidden_dim: int, n_heads: int = 4):
         super().__init__()
         
-        self.query = nn.Linear(ts_dim, hidden_dim)
-        self.key = nn.Linear(sentiment_dim, hidden_dim)
-        self.value = nn.Linear(sentiment_dim, hidden_dim)
-        
-        self.scale = hidden_dim ** -0.5
-        
-        self.output_projection = nn.Linear(hidden_dim, ts_dim)
+        # Project sentiment to match ts_dim for multi-head attention
+        self.sent_proj = nn.Linear(sentiment_dim, ts_dim)
+        self.mha = nn.MultiheadAttention(ts_dim, n_heads, batch_first=True, dropout=0.1)
+        self.layer_norm = nn.LayerNorm(ts_dim)
     
-    def forward(self, ts_features: torch.Tensor, sentiment_features: torch.Tensor) -> torch.Tensor:
+    def forward(self, ts_sequence: torch.Tensor, sentiment_features: torch.Tensor) -> torch.Tensor:
         """
-        Apply cross-modal attention.
+        Apply cross-modal multi-head attention.
         
         Args:
-            ts_features: Time-series features (batch, ts_dim)
+            ts_sequence: Full LSTM output sequence (batch, seq_len, ts_dim)
             sentiment_features: Sentiment features (batch, sentiment_dim)
         
         Returns:
-            Attended features (batch, ts_dim)
+            Attended and pooled features (batch, ts_dim)
         """
-        Q = self.query(ts_features).unsqueeze(1)  # (batch, 1, hidden)
-        K = self.key(sentiment_features).unsqueeze(1)  # (batch, 1, hidden)
-        V = self.value(sentiment_features).unsqueeze(1)  # (batch, 1, hidden)
+        # Expand sentiment to a pseudo-sequence of length 1 for K/V
+        sent_proj = self.sent_proj(sentiment_features).unsqueeze(1)  # (batch, 1, ts_dim)
         
-        # Attention
-        attn = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
-        attn = F.softmax(attn, dim=-1)
+        # Multi-head attention: Q = time-series sequence, K/V = sentiment
+        attn_out, _ = self.mha(ts_sequence, sent_proj.expand(-1, ts_sequence.size(1), -1), 
+                                sent_proj.expand(-1, ts_sequence.size(1), -1))
         
-        out = torch.matmul(attn, V).squeeze(1)
+        # Residual + layer norm
+        attn_out = self.layer_norm(ts_sequence + attn_out)
         
-        return self.output_projection(out)
+        # Pool across time
+        return attn_out.mean(dim=1)
 
 
 class MultimodalFusionModel(nn.Module):
     """
     Multimodal model combining time-series and sentiment for stock prediction.
     Supports both regression (price prediction) and classification (direction).
+    Now supports multi-day prediction horizons.
     """
     
     def __init__(
@@ -66,12 +69,15 @@ class MultimodalFusionModel(nn.Module):
         fusion_hidden_size: int = MODEL_CONFIG['fusion_hidden_dim'],
         num_classes: int = MODEL_CONFIG['num_classes'],
         dropout: float = MODEL_CONFIG['fusion_dropout'],
-        use_cross_attention: bool = True
+        use_cross_attention: bool = True,
+        prediction_horizons: list = None
     ):
         super().__init__()
         
         self.use_cross_attention = use_cross_attention
         self.sentiment_input_size = sentiment_input_size
+        self.prediction_horizons = prediction_horizons or PREDICTION_HORIZONS
+        self.n_horizons = len(self.prediction_horizons)
         
         # Time-series encoder
         self.ts_encoder = TimeSeriesEncoder(
@@ -89,12 +95,13 @@ class MultimodalFusionModel(nn.Module):
                 hidden_dim=sentiment_hidden_size
             )
             
-            # Cross-modal attention
+            # Cross-modal attention (fixed: now uses multi-head attention)
             if use_cross_attention:
                 self.cross_attention = CrossModalAttention(
                     ts_dim=self.ts_encoder.output_size,
                     sentiment_dim=sentiment_hidden_size,
-                    hidden_dim=fusion_hidden_size
+                    hidden_dim=fusion_hidden_size,
+                    n_heads=4
                 )
             
             fusion_input_size = self.ts_encoder.output_size + sentiment_hidden_size
@@ -115,11 +122,18 @@ class MultimodalFusionModel(nn.Module):
             nn.Dropout(dropout)
         )
         
-        # Regression head (price prediction)
+        # Regression head — single output (backward compat)
         self.regression_head = nn.Sequential(
             nn.Linear(fusion_hidden_size // 2, fusion_hidden_size // 4),
             nn.ReLU(),
             nn.Linear(fusion_hidden_size // 4, 1)
+        )
+        
+        # Multi-day regression head — outputs one return per horizon
+        self.multi_regression_head = nn.Sequential(
+            nn.Linear(fusion_hidden_size // 2, fusion_hidden_size // 4),
+            nn.ReLU(),
+            nn.Linear(fusion_hidden_size // 4, self.n_horizons)
         )
         
         # Classification head (direction prediction)
@@ -153,19 +167,24 @@ class MultimodalFusionModel(nn.Module):
             sentiment_input: Sentiment input (batch, seq_len, sentiment_features)
         
         Returns:
-            Dict with regression output, classification logits, and attention weights
+            Dict with regression output, multi-day regression,
+            classification logits, and attention weights
         """
-        # Encode time-series
+        # Encode time-series — get both pooled output and full sequence
         ts_encoded, ts_attention = self.ts_encoder(ts_input)
+        
+        # Also get full sequence for cross-modal attention
+        ts_projected = self.ts_encoder.input_projection(ts_input)
+        ts_full_seq, _ = self.ts_encoder.lstm(ts_projected)
         
         # Encode sentiment if available
         if self.sentiment_encoder is not None and sentiment_input is not None:
             sentiment_encoded = self.sentiment_encoder(sentiment_input)
             
-            # Cross-modal attention
+            # Cross-modal attention (fixed: uses full temporal sequence)
             if self.use_cross_attention:
-                ts_attended = self.cross_attention(ts_encoded, sentiment_encoded)
-                ts_encoded = ts_encoded + ts_attended  # Residual connection
+                ts_cross_attended = self.cross_attention(ts_full_seq, sentiment_encoded)
+                ts_encoded = ts_encoded + ts_cross_attended  # Residual connection
             
             # Concatenate for fusion
             fused = torch.cat([ts_encoded, sentiment_encoded], dim=-1)
@@ -177,10 +196,12 @@ class MultimodalFusionModel(nn.Module):
         
         # Output heads
         regression_output = self.regression_head(fused).squeeze(-1)
+        multi_regression_output = self.multi_regression_head(fused)
         classification_logits = self.classification_head(fused)
         
         return {
             'regression': regression_output,
+            'multi_regression': multi_regression_output,
             'classification': classification_logits,
             'ts_attention': ts_attention,
             'fused_features': fused
@@ -195,7 +216,7 @@ class MultimodalFusionModel(nn.Module):
         Make predictions (inference mode).
         
         Returns:
-            Dict with predicted price and direction
+            Dict with predicted price, multi-day returns, and direction
         """
         self.eval()
         with torch.no_grad():
@@ -206,6 +227,7 @@ class MultimodalFusionModel(nn.Module):
             
             return {
                 'price': outputs['regression'],
+                'multi_day': outputs['multi_regression'],
                 'direction': direction_pred,
                 'direction_probs': direction_probs,
                 'attention': outputs['ts_attention']
@@ -279,6 +301,7 @@ if __name__ == "__main__":
     print(f"Time-series input: {ts_input.shape}")
     print(f"Sentiment input: {sentiment_input.shape}")
     print(f"Regression output: {outputs['regression'].shape}")
+    print(f"Multi-day regression output: {outputs['multi_regression'].shape}")
     print(f"Classification output: {outputs['classification'].shape}")
     print(f"Attention weights: {outputs['ts_attention'].shape}")
     print(f"\nTotal parameters: {sum(p.numel() for p in model.parameters()):,}")

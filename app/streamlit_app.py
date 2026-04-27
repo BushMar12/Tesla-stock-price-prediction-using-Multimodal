@@ -16,7 +16,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from config import STREAMLIT_CONFIG, STOCK_SYMBOL, MODELS_DIR
+from config import (
+    STREAMLIT_CONFIG, STOCK_SYMBOL, MODELS_DIR, PREDICTION_HORIZONS,
+    DIRECTION_RETURN_THRESHOLD
+)
 from src.data.stock_data import fetch_stock_data, get_latest_data
 from src.data.sentiment_data import fetch_sentiment_data, SentimentAnalyzer
 from src.features.technical import calculate_all_indicators
@@ -240,7 +243,10 @@ def load_multi_models():
             input_size=metadata['input_size'],
             sequence_length=metadata['sequence_length']
         )
-        multi_model.load_models(MODELS_DIR)
+        # Do not load the pickled XGBoost artifact in Streamlit. If the
+        # installed xgboost native library differs from the one used when the
+        # pickle was created, unpickling can segfault the Python process.
+        multi_model.load_models(MODELS_DIR, load_xgboost=False)
         return multi_model
     except Exception as e:
         return None
@@ -257,7 +263,19 @@ def get_multi_model_predictions(multi_model, df: pd.DataFrame, sentiment_df: pd.
         # Preprocess
         preprocessor = DataPreprocessor()
         merged = preprocessor.merge_data(df, sentiment_df, df_with_indicators)
-        preprocessor.select_features(merged)
+        
+        # Load metadata to get exactly the features the model was trained on
+        metadata = joblib.load(MODELS_DIR / 'preprocessing_metadata.pkl')
+        preprocessor.feature_columns = metadata['feature_columns']
+        preprocessor.sentiment_columns = metadata['sentiment_columns']
+        preprocessor.sequence_length = metadata['sequence_length']
+        
+        # Ensure all required features exist in merged
+        all_required = preprocessor.feature_columns + preprocessor.sentiment_columns
+        for col in all_required:
+            if col not in merged.columns:
+                merged[col] = 0.0
+                
         merged = preprocessor.clean_data(merged)
         
         # Load scalers
@@ -289,7 +307,7 @@ def get_multi_model_predictions(multi_model, df: pd.DataFrame, sentiment_df: pd.
 
 
 def make_prediction(model, preprocessor, df: pd.DataFrame, sentiment_df: pd.DataFrame):
-    """Make prediction using the model with returns-based approach"""
+    """Make prediction using the model with returns-based approach (single + multi-day)"""
     try:
         from src.features.technical import calculate_all_indicators
         import joblib
@@ -300,8 +318,17 @@ def make_prediction(model, preprocessor, df: pd.DataFrame, sentiment_df: pd.Data
         # Merge with sentiment
         merged = preprocessor.merge_data(df, sentiment_df, df_with_indicators)
         
-        # Select features
-        preprocessor.select_features(merged)
+        # Load metadata to guarantee feature columns match exactly what was seen during training
+        metadata = joblib.load(MODELS_DIR / 'preprocessing_metadata.pkl')
+        preprocessor.feature_columns = metadata['feature_columns']
+        preprocessor.sentiment_columns = metadata['sentiment_columns']
+        preprocessor.sequence_length = metadata['sequence_length']
+        
+        # Ensure all required features exist in merged
+        all_required = preprocessor.feature_columns + preprocessor.sentiment_columns
+        for col in all_required:
+            if col not in merged.columns:
+                merged[col] = 0.0
         
         # Clean and transform
         merged = preprocessor.clean_data(merged)
@@ -309,6 +336,12 @@ def make_prediction(model, preprocessor, df: pd.DataFrame, sentiment_df: pd.Data
         # Load scalers
         feature_scaler = joblib.load(MODELS_DIR / 'feature_scaler.pkl')
         return_scaler = joblib.load(MODELS_DIR / 'return_scaler.pkl')
+        
+        # Load multi-day scalers if available
+        multi_return_scalers = None
+        multi_scaler_path = MODELS_DIR / 'multi_return_scalers.pkl'
+        if multi_scaler_path.exists():
+            multi_return_scalers = joblib.load(multi_scaler_path)
         
         all_features = preprocessor.feature_columns + preprocessor.sentiment_columns
         merged[all_features] = feature_scaler.transform(merged[all_features])
@@ -335,8 +368,11 @@ def make_prediction(model, preprocessor, df: pd.DataFrame, sentiment_df: pd.Data
             direction_probs = torch.softmax(outputs['classification'], dim=-1)
             direction = torch.argmax(direction_probs, dim=-1).item()
             
-            # Regression output (predicted scaled return)
+            # Single-day regression output
             predicted_return_scaled = outputs['regression'].item()
+            
+            # Multi-day regression output
+            multi_day_scaled = outputs['multi_regression'].cpu().numpy()[0]
         
         # Inverse transform to actual return
         predicted_return = return_scaler.inverse_transform([[predicted_return_scaled]])[0, 0]
@@ -344,7 +380,22 @@ def make_prediction(model, preprocessor, df: pd.DataFrame, sentiment_df: pd.Data
         # Get current price and reconstruct predicted price
         current_price = df['close'].iloc[-1]
         predicted_price = current_price * (1 + predicted_return)
-        predicted_change = predicted_return * 100  # Convert to percentage
+        predicted_change = predicted_return * 100
+        
+        # Multi-day forecasts
+        multi_day_forecasts = []
+        for i, horizon in enumerate(PREDICTION_HORIZONS):
+            if multi_return_scalers and horizon in multi_return_scalers:
+                ret = multi_return_scalers[horizon].inverse_transform([[multi_day_scaled[i]]])[0, 0]
+            else:
+                ret = return_scaler.inverse_transform([[multi_day_scaled[i]]])[0, 0]
+            price = current_price * (1 + ret)
+            multi_day_forecasts.append({
+                'horizon': horizon,
+                'predicted_price': price,
+                'predicted_return': ret,
+                'predicted_change': ret * 100
+            })
             
         return {
             'direction': direction,
@@ -353,7 +404,8 @@ def make_prediction(model, preprocessor, df: pd.DataFrame, sentiment_df: pd.Data
             'predicted_price': predicted_price,
             'current_price': current_price,
             'predicted_change': predicted_change,
-            'predicted_return': predicted_return
+            'predicted_return': predicted_return,
+            'multi_day': multi_day_forecasts
         }
     
     except Exception as e:
@@ -366,15 +418,20 @@ def simulate_prediction(df: pd.DataFrame):
     # Use recent momentum for simulation
     recent_returns = df['close'].pct_change().tail(5).mean()
     current_price = df['close'].iloc[-1]
+    neutral_band_pct = DIRECTION_RETURN_THRESHOLD * 100
     
-    if recent_returns > 0:
-        direction = 1  # Up
-        probs = [0.3, 0.7]
-        predicted_change = np.random.uniform(0.5, 3)
-    else:
+    if recent_returns > DIRECTION_RETURN_THRESHOLD:
+        direction = 2  # Up
+        probs = [0.15, 0.25, 0.60]
+        predicted_change = np.random.uniform(neutral_band_pct, 3)
+    elif recent_returns < -DIRECTION_RETURN_THRESHOLD:
         direction = 0  # Down
-        probs = [0.7, 0.3]
-        predicted_change = np.random.uniform(-3, -0.5)
+        probs = [0.60, 0.25, 0.15]
+        predicted_change = np.random.uniform(-3, -neutral_band_pct)
+    else:
+        direction = 1  # Neutral
+        probs = [0.20, 0.60, 0.20]
+        predicted_change = np.random.uniform(-neutral_band_pct, neutral_band_pct)
     
     predicted_price = current_price * (1 + predicted_change / 100)
     
@@ -397,14 +454,14 @@ def main():
     st.markdown("### Multimodal Deep Learning for Stock Price Prediction")
     
     # Sidebar
-    st.sidebar.title("⚙️ Settings")
+    st.sidebar.title("Settings")
     
     # Date range
     col1, col2 = st.sidebar.columns(2)
     with col1:
         start_date = st.date_input(
             "Start Date",
-            datetime(2010, 6, 29)
+            datetime(2021, 1, 1)
         )
     with col2:
         end_date = st.date_input(
@@ -429,8 +486,9 @@ def main():
             df_with_indicators = calculate_all_indicators(df, add_targets=False)
             sentiment_df = fetch_sentiment_data(
                 df,
-                use_real_data=STREAMLIT_CONFIG["sentiment_use_real_data"],
+                use_real_data=STREAMLIT_CONFIG.get("sentiment_source") != "synthetic",
                 save=False,
+                source=STREAMLIT_CONFIG.get("sentiment_source", "synthetic"),
             )
         except Exception as e:
             st.error(f"Error loading data: {e}")
@@ -443,8 +501,8 @@ def main():
     multi_model = load_multi_models()
     
     # Main content
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["📈 Price Chart", "📊 Technical Analysis", "💭 Sentiment", "🔮 Prediction", "🏆 Model Comparison"]
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+        ["Price Chart", "Technical Analysis", "Sentiment", "One-Day Prediction", "Multi-Day Forecast", "Model Comparison", "Correlation Analysis"]
     )
     
     with tab1:
@@ -539,7 +597,7 @@ def main():
         """)
     
     with tab4:
-        st.subheader("🔮 Stock Price Prediction")
+        st.subheader("Stock Price Prediction")
         
         col1, col2 = st.columns([2, 1])
         
@@ -552,7 +610,7 @@ def main():
             """)
         
         with col2:
-            predict_button = st.button("🎯 Make Prediction", use_container_width=True)
+            predict_button = st.button("Make One-Day Prediction", use_container_width=True)
         
         if predict_button:
             with st.spinner("Analyzing data and making prediction..."):
@@ -561,72 +619,72 @@ def main():
                     prediction = make_prediction(model, preprocessor, df, sentiment_df)
                 else:
                     prediction = simulate_prediction(df)
+                st.session_state['prediction'] = prediction
                 
-                if prediction:
-                    st.markdown("---")
-                    
-                    # Price Prediction (Regression)
-                    st.subheader("💰 Price Prediction (Regression)")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    current_price = prediction['current_price']
-                    predicted_price = prediction['predicted_price']
-                    predicted_change = prediction['predicted_change']
-                    
-                    with col1:
-                        st.metric("Current Price", f"${current_price:.2f}")
-                    
-                    with col2:
-                        change_color = "green" if predicted_change > 0 else "red" if predicted_change < 0 else "gray"
-                        st.metric(
-                            "Predicted Price (Next Day)", 
-                            f"${predicted_price:.2f}",
-                            f"{predicted_change:+.2f}%"
-                        )
-                    
-                    with col3:
-                        price_diff = predicted_price - current_price
-                        st.metric(
-                            "Expected Change",
-                            f"${abs(price_diff):.2f}",
-                            "Gain" if price_diff > 0 else "Loss" if price_diff < 0 else "No Change"
-                        )
-                    
-                    st.markdown("---")
-                    
-                    # Direction Prediction (Classification)
-                    st.subheader("📊 Direction Prediction (Classification)")
-                    
-                    direction_labels = ['📉 DOWN', '📈 UP']
-                    
-                    direction = prediction['direction']
-                    confidence = prediction['confidence']
-                    probs = prediction['direction_probs']
-                    
-                    # Display prediction
-                    st.markdown(f"### Predicted Direction: **{direction_labels[direction]}**")
-                    st.markdown(f"Confidence: **{confidence*100:.1f}%**")
-                    
-                    # Probability bars
-                    st.subheader("Direction Probabilities")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.metric("Down", f"{probs[0]*100:.1f}%")
-                        st.progress(float(probs[0]))
-                    
-                    with col2:
-                        st.metric("Up", f"{probs[1]*100:.1f}%")
-                        st.progress(float(probs[1]))
-                    
-                    # Warning
-                    st.warning("""
-                    ⚠️ **Disclaimer**: This prediction is for educational purposes only. 
-                    Stock markets are inherently unpredictable, and this tool should not 
-                    be used for actual trading decisions.
-                    """)
+        if 'prediction' in st.session_state and st.session_state['prediction']:
+            prediction = st.session_state['prediction']
+            st.markdown("---")
+            
+            # Price Prediction (Regression)
+            st.subheader("Price Prediction (Regression)")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            current_price = prediction['current_price']
+            predicted_price = prediction['predicted_price']
+            predicted_change = prediction['predicted_change']
+            
+            with col1:
+                st.metric("Current Price", f"${current_price:.2f}")
+            
+            with col2:
+                change_color = "green" if predicted_change > 0 else "red" if predicted_change < 0 else "gray"
+                st.metric(
+                    "Predicted Price (Next Day)", 
+                    f"${predicted_price:.2f}",
+                    f"{predicted_change:+.2f}%"
+                )
+            
+            with col3:
+                price_diff = predicted_price - current_price
+                st.metric(
+                    "Expected Change",
+                    f"${abs(price_diff):.2f}",
+                    "Gain" if price_diff > 0 else "Loss" if price_diff < 0 else "No Change"
+                )
+            
+            st.markdown("---")
+            
+            # Direction Prediction (Classification)
+            st.subheader("Direction Prediction (Classification)")
+            
+            direction_labels = ['DOWN', 'NEUTRAL', 'UP']
+            
+            direction = prediction['direction']
+            confidence = prediction['confidence']
+            probs = prediction['direction_probs']
+            
+            # Display prediction
+            st.markdown(f"### Predicted Direction: **{direction_labels[direction]}**")
+            st.markdown(f"Confidence: **{confidence*100:.1f}%**")
+            
+            # Probability bars
+            st.subheader("Direction Probabilities")
+            
+            probability_labels = ["Down", "Neutral", "Up"]
+            p_cols = st.columns(len(probability_labels))
+            
+            for prob_col, label, prob in zip(p_cols, probability_labels, probs):
+                with prob_col:
+                    st.metric(label, f"{prob*100:.1f}%")
+                    st.progress(float(prob))
+            
+            # Warning
+            st.warning("""
+            **Disclaimer**: This prediction is for educational purposes only. 
+            Stock markets are inherently unpredictable, and this tool should not 
+            be used for actual trading decisions.
+            """)
         
         # Model info
         with st.expander("Model Architecture"):
@@ -646,15 +704,80 @@ def main():
                
             4. **Fusion Layer**
                - Combines encoded representations
-               - Dual output heads for regression & classification
+               - Single-Day and Direction output heads
             """)
-    
+
     with tab5:
-        st.subheader("🏆 Model Comparison: LSTM vs GRU vs XGBoost")
+        st.subheader("Multi-Day Stock Price Forecast")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.markdown("""
+            The multi-day forecast is generated simultaneously using a **Multi-Output Regression Head**, 
+            which is optimized across 4 different time horizons to draw a smooth future trajectory of the stock price.
+            """)
+        
+        with col2:
+            predict_button_multi = st.button("Make Multi-Day Prediction", use_container_width=True)
+            
+        if predict_button_multi:
+            with st.spinner("Analyzing data and generating multi-day forecast..."):
+                if model_loaded and model is not None:
+                    preprocessor = DataPreprocessor()
+                    prediction = make_prediction(model, preprocessor, df, sentiment_df)
+                else:
+                    prediction = simulate_prediction(df)
+                st.session_state['prediction'] = prediction
+                
+        if 'prediction' in st.session_state and st.session_state['prediction']:
+            prediction = st.session_state['prediction']
+            current_price = prediction['current_price']
+            
+            if 'multi_day' in prediction and prediction['multi_day']:
+                st.markdown("---")
+                
+                # Display as metric columns
+                forecast_cols = st.columns(len(prediction['multi_day']))
+                for i, f in enumerate(prediction['multi_day']):
+                    with forecast_cols[i]:
+                        st.metric(
+                            f"{f['horizon']}-Day Ahead",
+                            f"${f['predicted_price']:.2f}",
+                            f"{f['predicted_change']:+.2f}%"
+                        )
+                
+                # Multi-day forecast line chart
+                forecast_dates = [0] + [f['horizon'] for f in prediction['multi_day']]
+                forecast_prices = [current_price] + [f['predicted_price'] for f in prediction['multi_day']]
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=forecast_dates, y=forecast_prices,
+                    mode='lines+markers',
+                    name='Predicted Price',
+                    line=dict(color='#1f77b4', width=3),
+                    marker=dict(size=10)
+                ))
+                fig.add_hline(y=current_price, line_dash="dash", line_color="gray",
+                              annotation_text="Current Price")
+                fig.update_layout(
+                    title='Multi-Day Price Forecast',
+                    xaxis_title='Days Ahead',
+                    yaxis_title='Predicted Price ($)',
+                    height=450,
+                    template='plotly_white'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Multi-day forecast data is not available from the current model.")
+                    
+    with tab6:
+        st.subheader("Model Comparison: LSTM vs GRU vs Transformer vs XGBoost")
         
         if multi_model is None:
             st.warning(
-                "Multi-model comparison not available. Run `python model_comparison.py` first to train LSTM, GRU, and XGBoost baselines."
+                "Multi-model comparison not available. Run `python model_comparison.py` first to train LSTM, GRU, Transformer, and XGBoost baselines."
             )
             st.code("python model_comparison.py", language="bash")
         else:
@@ -663,7 +786,7 @@ def main():
             # Display saved metrics if available
             comparison_file = MODELS_DIR / 'model_comparison.csv'
             if comparison_file.exists():
-                st.subheader("📊 Test Set Performance Metrics")
+                st.subheader("Test Set Performance Metrics")
                 comparison_df = pd.read_csv(comparison_file)
                 
                 # Style the dataframe
@@ -709,12 +832,12 @@ def main():
             st.markdown("---")
             
             # Live predictions from all models
-            st.subheader("🔮 Live Predictions from All Models")
+            st.subheader("Live Predictions from All Models")
             
-            predict_btn = st.button("🎯 Get Predictions from All Models", use_container_width=True)
+            predict_btn = st.button("Get Predictions from All Models", use_container_width=True)
             
             if predict_btn:
-                with st.spinner("Getting predictions from LSTM, GRU, and XGBoost..."):
+                with st.spinner("Getting predictions from LSTM, GRU, Transformer, and XGBoost..."):
                     predictions, current_price = get_multi_model_predictions(
                         multi_model, df, sentiment_df
                     )
@@ -731,7 +854,7 @@ def main():
                                 'Model': model_name,
                                 'Predicted Price': f"${pred_price:.2f}",
                                 'Change': f"{change:+.2f}%",
-                                'Direction': '📈 Up' if change > 0 else '📉 Down' if change < 0 else '➡️ Neutral'
+                                'Direction': 'Up' if change > 0 else 'Down' if change < 0 else 'Neutral'
                             })
                         
                         pred_df = pd.DataFrame(pred_data)
@@ -756,29 +879,99 @@ def main():
                         ensemble_change = ((ensemble_price - current_price) / current_price) * 100
                         
                         st.markdown("---")
-                        st.subheader("🎯 Ensemble Prediction (Average)")
+                        st.subheader("Ensemble Prediction (Average)")
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             st.metric("Current Price", f"${current_price:.2f}")
                         with col2:
                             st.metric("Ensemble Prediction", f"${ensemble_price:.2f}", f"{ensemble_change:+.2f}%")
                         with col3:
-                            direction = '📈 Up' if ensemble_change > 0.5 else '📉 Down' if ensemble_change < -0.5 else '➡️ Neutral'
+                            direction = 'Up' if ensemble_change > 0.5 else 'Down' if ensemble_change < -0.5 else 'Neutral'
                             st.metric("Direction", direction)
             
             # Model descriptions
-            with st.expander("📚 Model Descriptions"):
+            with st.expander("Model Descriptions"):
                 st.markdown("""
                 | Model | Description | Strengths |
                 |-------|-------------|-----------|
                 | **LSTM** | Long Short-Term Memory neural network | Captures long-term dependencies, handles vanishing gradients |
                 | **GRU** | Gated Recurrent Unit neural network | Faster training, fewer parameters than LSTM |
+                | **Transformer** | Self-attention encoder with positional encoding | Captures long-range patterns, parallelizable |
                 | **XGBoost** | Gradient Boosting ensemble method | Handles non-linear patterns, robust to outliers |
                 
                 All models use the same input features:
-                - 60-day price history with technical indicators
+                - 60-day price history with technical indicators + market context (SPY, VIX)
                 - Sentiment features from news analysis
+                - Calendar features (day of week, month, quarter-end)
                 """)
+    
+    with tab7:
+        st.subheader("Feature Correlation with Next-Day Return")
+        
+        # Calculate correlations (need targets)
+        from src.features.technical import add_target_variables
+        df_corr = add_target_variables(df_with_indicators.copy(), horizon=1)
+        
+        # Select numeric columns
+        numeric_df = df_corr.select_dtypes(include=[np.number])
+        
+        # Drop columns that are constant or have all NaNs
+        numeric_df = numeric_df.dropna(axis=1, how='all')
+        
+        if 'Target_Return' in numeric_df.columns:
+            # Compute correlation with target
+            corr_with_target = numeric_df.corr()['Target_Return'].sort_values(ascending=False)
+            
+            # Remove the target itself and price-based targets that are overlapping
+            # Also remove Target_Price and Target_Direction if they exist
+            to_drop = ['Target_Return', 'Target_Price', 'Target_Direction', 'Target_Return_1d', 'Target_Return_3d', 'Target_Return_5d', 'Target_Return_7d']
+            corr_with_target = corr_with_target.drop(labels=[c for c in to_drop if c in corr_with_target.index])
+            
+            # Sort by absolute correlation to find top contributors
+            influential_features = corr_with_target.abs().sort_values(ascending=False)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Top 10 Positively Correlated Features**")
+                st.dataframe(corr_with_target[corr_with_target > 0].head(10))
+            
+            with col2:
+                st.markdown("**Top 10 Negatively Correlated Features**")
+                # Showing most negative first
+                st.dataframe(corr_with_target[corr_with_target < 0].sort_values().head(10))
+                
+            # Heatmap of top 15 most influential features
+            st.markdown("---")
+            st.subheader("Correlation Heatmap: Top 15 Most Influential Features")
+            
+            # Get top 15 features by absolute correlation
+            top_abs_features = influential_features.head(15).index.tolist()
+            
+            # Include the target in the heatmap
+            heatmap_features = ['Target_Return'] + top_abs_features
+            
+            # Calculate correlation matrix for these features
+            corr_matrix = numeric_df[heatmap_features].corr()
+            
+            fig = px.imshow(
+                corr_matrix,
+                text_auto=".2f",
+                aspect="auto",
+                color_continuous_scale='RdBu_r',
+                range_color=[-1, 1],
+                title="Correlation Matrix (Target vs Top Features)"
+            )
+            fig.update_layout(height=700)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.info("""
+            **How to read this matrix:**
+            - **Positive Correlation (Red):** Values close to +1.0. When this indicator goes up, the next day's return tends to be positive.
+            - **Negative Correlation (Blue):** Values close to -1.0. When this indicator goes up, the next day's return tends to be negative.
+            - **Target_Return:** This is our primary prediction target. The first row/column shows how each feature directly relates to tomorrow's price movement.
+            """)
+        else:
+            st.warning("Target_Return column not found. Correlation analysis unavailable.")
     
     # Footer
     st.markdown("---")

@@ -2,6 +2,7 @@
 Main training script for Tesla Stock Price Prediction
 Uses returns-based prediction for better accuracy
 """
+import argparse
 import sys
 from pathlib import Path
 
@@ -13,25 +14,84 @@ from src.data.sentiment_data import fetch_sentiment_data
 from src.features.technical import calculate_all_indicators
 from src.data.preprocessing import DataPreprocessor
 from src.models.trainer import train_model
-from config import SENTIMENT_CONFIG
+from config import SENTIMENT_CONFIG, START_DATE, END_DATE
+
+
+TRAINING_MODES = {
+    "current": {
+        "description": "Use sentiment data and cross-attention.",
+        "use_sentiment": True,
+        "use_cross_attention": True,
+    },
+    "no-sentiment": {
+        "description": "Train only on price, technical, market, and calendar features.",
+        "use_sentiment": False,
+        "use_cross_attention": False,
+    },
+    "sentiment-no-cross-attention": {
+        "description": "Use sentiment data but disable cross-attention.",
+        "use_sentiment": True,
+        "use_cross_attention": False,
+    },
+}
+
+
+def parse_args():
+    """Parse command-line options."""
+    parser = argparse.ArgumentParser(
+        description="Train the Tesla stock prediction fusion model."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=TRAINING_MODES.keys(),
+        default="current",
+        help=(
+            "Training mode: current = sentiment + cross-attention; "
+            "no-sentiment = no sentiment branch; "
+            "sentiment-no-cross-attention = sentiment branch without cross-attention."
+        ),
+    )
+    parser.add_argument(
+        "--sentiment-source",
+        choices=["synthetic", "rss", "alpha_vantage"],
+        default=SENTIMENT_CONFIG.get("source", "synthetic"),
+        help=(
+            "Sentiment source for modes that use sentiment. "
+            "alpha_vantage requires ALPHA_VANTAGE_API_KEY."
+        ),
+    )
+    return parser.parse_args()
 
 
 def main():
     """Main training pipeline"""
+    args = parse_args()
+    mode_config = TRAINING_MODES[args.mode]
+
     print("=" * 60)
     print("Tesla Stock Price Prediction - Training Pipeline")
-    print("Predicting Returns → Reconstructing Prices")
+    print("Predicting Returns -> Reconstructing Prices")
+    print(f"Training mode: {args.mode}")
+    print(f"Mode details: {mode_config['description']}")
+    if mode_config["use_sentiment"]:
+        print(f"Sentiment source: {args.sentiment_source}")
     print("=" * 60)
     
     # Step 1: Fetch stock data
     print("\n Step 1: Fetching stock data...")
-    stock_df = fetch_stock_data(start_date="2010-06-29")
+    stock_df = fetch_stock_data(start_date=START_DATE, end_date=END_DATE)
     
-    # Step 2: Fetch sentiment data
-    print("\n Step 2: Fetching sentiment data...")
-    sentiment_df = fetch_sentiment_data(
-        stock_df, use_real_data=SENTIMENT_CONFIG["use_real_data_fetch"]
-    )
+    # Step 2: Fetch or disable sentiment data
+    if mode_config["use_sentiment"]:
+        print("\n Step 2: Fetching sentiment data...")
+        sentiment_df = fetch_sentiment_data(
+            stock_df,
+            use_real_data=args.sentiment_source != "synthetic",
+            source=args.sentiment_source,
+        )
+    else:
+        print("\n Step 2: Sentiment disabled for this training run.")
+        sentiment_df = stock_df[['date']].copy()
     
     # Step 3: Calculate technical indicators
     print("\n Step 3: Calculating technical indicators...")
@@ -44,10 +104,16 @@ def main():
     
     # Step 5: Train model (pass return_scaler for proper evaluation)
     print("\n Step 5: Training model...")
-    model, trainer, history = train_model(splits, return_scaler=preprocessor.return_scaler)
+    model, trainer, history = train_model(
+        splits,
+        return_scaler=preprocessor.return_scaler,
+        use_cross_attention=mode_config["use_cross_attention"],
+        training_mode=args.mode,
+        use_sentiment=mode_config["use_sentiment"],
+    )
     
     print("\n" + "=" * 60)
-    print("✅ Training complete!")
+    print("Training complete!")
     print("=" * 60)
     print("\nTo run the Streamlit app:")
     print("  streamlit run app/streamlit_app.py")

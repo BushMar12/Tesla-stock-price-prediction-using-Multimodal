@@ -1,15 +1,36 @@
 """
-Standalone regression models: LSTM, GRU, and XGBoost for stock price prediction
+Standalone regression models: LSTM, GRU, Transformer, and XGBoost for stock price prediction
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import math
 from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from config import MODEL_CONFIG
+
+
+class PositionalEncoding(nn.Module):
+    """Sinusoidal positional encoding for Transformer models"""
+    
+    def __init__(self, d_model: int, max_len: int = 200, dropout: float = 0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
+        self.register_buffer('pe', pe)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.pe[:, :x.size(1), :]
+        return self.dropout(x)
 
 
 class LSTMRegressor(nn.Module):
@@ -140,6 +161,68 @@ class GRURegressor(nn.Module):
         return self.fc(last_out).squeeze(-1)
 
 
+class TransformerRegressor(nn.Module):
+    """Transformer-based regression model for price prediction"""
+    
+    def __init__(
+        self,
+        input_size: int,
+        d_model: int = 128,
+        nhead: int = 4,
+        num_layers: int = 2,
+        dim_feedforward: int = 256,
+        dropout: float = 0.1
+    ):
+        super().__init__()
+        
+        self.model_name = "Transformer"
+        self.d_model = d_model
+        
+        # Input projection
+        self.input_projection = nn.Sequential(
+            nn.Linear(input_size, d_model),
+            nn.LayerNorm(d_model),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Positional encoding
+        self.pos_encoding = PositionalEncoding(d_model, max_len=200, dropout=dropout)
+        
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Output layers
+        self.fc = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, 1)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Project input
+        x = self.input_projection(x)
+        
+        # Add positional encoding
+        x = self.pos_encoding(x)
+        
+        # Transformer
+        x = self.transformer(x)
+        
+        # Use last token embedding for prediction
+        last_out = x[:, -1, :]
+        
+        return self.fc(last_out).squeeze(-1)
+
+
 class XGBoostRegressor:
     """XGBoost-based regression model for price prediction"""
     
@@ -151,16 +234,34 @@ class XGBoostRegressor:
             'max_depth': kwargs.get('max_depth', 4),
             'learning_rate': kwargs.get('learning_rate', 0.05),
             'subsample': kwargs.get('subsample', 0.8),
-            'random_state': 42
+            'random_state': kwargs.get('random_state', 42),
+            'n_jobs': kwargs.get('n_jobs', 1),
         }
+
+    @staticmethod
+    def _prepare_features(X: np.ndarray) -> np.ndarray:
+        """Flatten sequence data and hand XGBoost a native-friendly array."""
+        if len(X.shape) == 3:
+            X = X.reshape(X.shape[0], -1)
+
+        X = np.ascontiguousarray(X, dtype=np.float32)
+        if not np.isfinite(X).all():
+            raise ValueError("XGBoost input contains NaN or infinite values")
+        return X
+
+    @staticmethod
+    def _prepare_target(y: np.ndarray) -> np.ndarray:
+        y = np.ascontiguousarray(np.asarray(y).reshape(-1), dtype=np.float32)
+        if not np.isfinite(y).all():
+            raise ValueError("XGBoost target contains NaN or infinite values")
+        return y
     
     def fit(self, X: np.ndarray, y: np.ndarray):
         """Train the XGBoost model"""
         from xgboost import XGBRegressor
 
-        # Flatten sequences for XGBoost: (batch, seq, features) -> (batch, seq*features)
-        if len(X.shape) == 3:
-            X = X.reshape(X.shape[0], -1)
+        X = self._prepare_features(X)
+        y = self._prepare_target(y)
 
         self.model = XGBRegressor(
             n_estimators=self.params["n_estimators"],
@@ -168,7 +269,7 @@ class XGBoostRegressor:
             learning_rate=self.params["learning_rate"],
             subsample=self.params["subsample"],
             random_state=self.params["random_state"],
-            n_jobs=-1,
+            n_jobs=self.params["n_jobs"],
             verbosity=0,
         )
         self.model.fit(X, y)
@@ -176,8 +277,7 @@ class XGBoostRegressor:
     
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Make predictions"""
-        if len(X.shape) == 3:
-            X = X.reshape(X.shape[0], -1)
+        X = self._prepare_features(X)
         return self.model.predict(X)
     
     def __call__(self, X: np.ndarray) -> np.ndarray:
@@ -200,10 +300,11 @@ class MultiModelRegressor:
             self.device = torch.device('cpu')
         print(f"Using device: {self.device}")
         
-        # Initialize models
+        # Initialize models (now includes Transformer)
         self.models = {
             'LSTM': LSTMRegressor(input_size).to(self.device),
             'GRU': GRURegressor(input_size).to(self.device),
+            'Transformer': TransformerRegressor(input_size).to(self.device),
             'XGBoost': XGBoostRegressor()
         }
         
@@ -217,11 +318,11 @@ class MultiModelRegressor:
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
-        epochs: int = 50,
+        epochs: int = 100,
         batch_size: int = 32,
         lr: float = 1e-3
     ) -> dict:
-        """Train a PyTorch model"""
+        """Train a PyTorch model for the full configured epoch count."""
         from torch.utils.data import TensorDataset, DataLoader
         
         # Convert to tensors
@@ -233,8 +334,13 @@ class MultiModelRegressor:
         train_dataset = TensorDataset(X_train_t, y_train_t)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        criterion = nn.MSELoss()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
+        criterion = nn.SmoothL1Loss()  # Huber loss - matches the fusion model
+        
+        # OneCycleLR for baselines too
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=lr * 10, epochs=epochs, steps_per_epoch=len(train_loader)
+        )
         
         best_val_loss = float('inf')
         history = {'train_loss': [], 'val_loss': []}
@@ -251,7 +357,9 @@ class MultiModelRegressor:
                 predictions = model(X_batch)
                 loss = criterion(predictions, y_batch)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                scheduler.step()
                 train_loss += loss.item()
             
             train_loss /= len(train_loader)
@@ -269,7 +377,7 @@ class MultiModelRegressor:
             status = ""
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                status = "✓ Best"
+                status = "Best"
             
             # Print progress every 10 epochs or first/last
             if epoch % 10 == 0 or epoch == epochs - 1 or status:
@@ -286,7 +394,7 @@ class MultiModelRegressor:
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
-        epochs: int = 50,
+        epochs: int = 100,
         plot_history: bool = True
     ):
         """Train all models"""
@@ -309,13 +417,21 @@ class MultiModelRegressor:
         self.trained['GRU'] = True
         
         print("\n" + "="*60)
+        print("Training Transformer...")
+        print("="*60)
+        self.histories['Transformer'] = self.train_pytorch_model(
+            self.models['Transformer'], X_train, y_train, X_val, y_val, epochs
+        )
+        self.trained['Transformer'] = True
+        
+        print("\n" + "="*60)
         print("Training XGBoost...")
         print("="*60)
         self.models['XGBoost'].fit(X_train, y_train)
         self.trained['XGBoost'] = True
         print("  XGBoost training complete (no epochs - gradient boosting)")
         
-        print("\n✅ All models trained!")
+        print("\nAll models trained!")
         
         # Plot training history
         if plot_history:
@@ -325,7 +441,10 @@ class MultiModelRegressor:
         """Plot training and validation loss curves"""
         import matplotlib.pyplot as plt
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        n_models = len(self.histories)
+        fig, axes = plt.subplots(1, n_models, figsize=(6 * n_models, 5))
+        if n_models == 1:
+            axes = [axes]
         
         for idx, (name, history) in enumerate(self.histories.items()):
             ax = axes[idx]
@@ -335,7 +454,7 @@ class MultiModelRegressor:
             ax.plot(epochs, history['val_loss'], 'r-', label='Val Loss', linewidth=2)
             ax.set_title(f'{name} Training History', fontsize=14)
             ax.set_xlabel('Epoch')
-            ax.set_ylabel('Loss (MSE)')
+            ax.set_ylabel('Loss (Huber)')
             ax.legend()
             ax.grid(True, alpha=0.3)
             
@@ -347,7 +466,7 @@ class MultiModelRegressor:
         
         plt.tight_layout()
         plt.savefig('training_history.png', dpi=150)
-        print("\n📊 Training history plot saved to 'training_history.png'")
+        print("\nTraining history plot saved to 'training_history.png'")
     
     def evaluate_all(
         self,
@@ -478,7 +597,7 @@ class MultiModelRegressor:
         save_dir.mkdir(parents=True, exist_ok=True)
         
         # Save PyTorch models
-        for name in ['LSTM', 'GRU']:
+        for name in ['LSTM', 'GRU', 'Transformer']:
             if self.trained[name]:
                 torch.save(
                     self.models[name].state_dict(),
@@ -499,8 +618,15 @@ class MultiModelRegressor:
         
         print(f"Models saved to {save_dir}")
     
-    def load_models(self, save_dir: Path):
-        """Load all trained models"""
+    def load_models(self, save_dir: Path, load_xgboost: bool = True):
+        """Load trained models.
+
+        Args:
+            save_dir: Directory containing saved model artifacts.
+            load_xgboost: Whether to load the pickled XGBoost artifact. Set
+                this to False in UI/server contexts because incompatible
+                XGBoost native libraries can segfault during unpickling.
+        """
         import joblib
         
         save_dir = Path(save_dir)
@@ -516,20 +642,28 @@ class MultiModelRegressor:
         self.models = {
             'LSTM': LSTMRegressor(self.input_size).to(self.device),
             'GRU': GRURegressor(self.input_size).to(self.device),
+            'Transformer': TransformerRegressor(self.input_size).to(self.device),
             'XGBoost': XGBoostRegressor()
         }
         
         # Load PyTorch models
-        for name in ['LSTM', 'GRU']:
-            if self.trained[name]:
-                self.models[name].load_state_dict(
-                    torch.load(save_dir / f'{name.lower()}_regressor.pt', map_location=self.device)
-                )
-                self.models[name].eval()
+        for name in ['LSTM', 'GRU', 'Transformer']:
+            if self.trained.get(name, False):
+                model_path = save_dir / f'{name.lower()}_regressor.pt'
+                if model_path.exists():
+                    self.models[name].load_state_dict(
+                        torch.load(model_path, map_location=self.device)
+                    )
+                    self.models[name].eval()
         
+        if not load_xgboost:
+            self.trained['XGBoost'] = False
+
         # Load XGBoost model
-        if self.trained['XGBoost']:
-            self.models['XGBoost'].model = joblib.load(save_dir / 'xgboost_regressor.pkl')
+        if load_xgboost and self.trained.get('XGBoost', False):
+            xgb_path = save_dir / 'xgboost_regressor.pkl'
+            if xgb_path.exists():
+                self.models['XGBoost'].model = joblib.load(xgb_path)
         
         print(f"Models loaded from {save_dir}")
 
@@ -550,6 +684,11 @@ if __name__ == "__main__":
     gru = GRURegressor(input_size=input_size)
     out = gru(x)
     print(f"GRU - Input: {x.shape}, Output: {out.shape}")
+    
+    # Test Transformer
+    transformer = TransformerRegressor(input_size=input_size)
+    out = transformer(x)
+    print(f"Transformer - Input: {x.shape}, Output: {out.shape}")
     
     # Test XGBoost
     xgb = XGBoostRegressor()

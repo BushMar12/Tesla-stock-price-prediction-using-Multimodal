@@ -116,3 +116,6 @@ data/processed/*.csv
 models/*.pt
 models/*.pkl
 *.log
+
+# Key files
+.key.txt

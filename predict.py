@@ -44,8 +44,9 @@ def predict_next_day():
     stock_df = fetch_stock_data(save=False)
     sentiment_df = fetch_sentiment_data(
         stock_df,
-        use_real_data=SENTIMENT_CONFIG["use_real_data_fetch"],
+        use_real_data=SENTIMENT_CONFIG.get("source") != "synthetic",
         save=False,
+        source=SENTIMENT_CONFIG.get("source", "synthetic"),
     )
     indicators_df = calculate_all_indicators(stock_df, add_targets=False)
     
@@ -106,9 +107,9 @@ def predict_next_day():
     
     # Print results
     direction_labels = {
-        0: "📉 DOWN",
-        1: "➡️ NEUTRAL",
-        2: "📈 UP",
+        0: "DOWN",
+        1: "NEUTRAL",
+        2: "UP",
     }
     next_label = direction_labels.get(direction, "UNKNOWN")
 
@@ -128,8 +129,8 @@ def predict_next_day():
         
         pred_price = current_price * (1 + pred_return)
         change_pct = pred_return * 100
-        arrow = "↑" if change_pct > 0 else "↓" if change_pct < 0 else "→"
-        print(f"  {horizon}-day ahead:     ${pred_price:.2f}  ({arrow} {change_pct:+.2f}%)")
+        direction_marker = "UP" if change_pct > 0 else "DOWN" if change_pct < 0 else "FLAT"
+        print(f"  {horizon}-day ahead:     ${pred_price:.2f}  ({direction_marker} {change_pct:+.2f}%)")
     
     print("=" * 60)
 

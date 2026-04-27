@@ -15,7 +15,7 @@ from src.data.sentiment_data import fetch_sentiment_data
 from src.features.technical import calculate_all_indicators
 from src.data.preprocessing import DataPreprocessor
 from src.models.regression_models import MultiModelRegressor
-from config import MODELS_DIR, RAW_DATA_DIR
+from config import MODELS_DIR, RAW_DATA_DIR, TRAINING_CONFIG
 
 
 def main():
@@ -23,7 +23,7 @@ def main():
     print("=" * 60)
     print("Multi-Model Regression Training")
     print("LSTM vs GRU vs Transformer vs XGBoost Comparison")
-    print("Predicting Returns → Reconstructing Prices")
+    print("Predicting Returns -> Reconstructing Prices")
     print("=" * 60)
     
     # Step 1: Fetch and preprocess data
@@ -70,7 +70,13 @@ def main():
     input_size = X_train.shape[2]
     multi_model = MultiModelRegressor(input_size=input_size)
     
-    multi_model.train_all(X_train, y_train, X_val, y_val, epochs=200)
+    multi_model.train_all(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        epochs=TRAINING_CONFIG["epochs"]
+    )
     
     # Step 3: Evaluate models (pass return_scaler and close_prices for price reconstruction)
     print("\n Step 3: Evaluating models...")
@@ -100,7 +106,7 @@ def main():
     
     # Find best model
     best_model = min(results.items(), key=lambda x: x[1]['RMSE'])
-    print(f"\n Best Model (lowest RMSE): {best_model[0]}")
+    print(f"\nBest Model (lowest RMSE): {best_model[0]}")
     
     # Step 5: Save models
     print("\n Step 5: Saving models...")
@@ -110,7 +116,7 @@ def main():
     comparison_df.to_csv(MODELS_DIR / 'model_comparison.csv', index=False)
     
     print("\n" + "=" * 60)
-    print("✅ Training complete!")
+    print("Training complete!")
     print("=" * 60)
     print("\nTo run the Streamlit app with model comparison:")
     print("  streamlit run app/streamlit_app.py")

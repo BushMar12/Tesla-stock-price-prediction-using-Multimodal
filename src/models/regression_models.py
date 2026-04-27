@@ -318,7 +318,7 @@ class MultiModelRegressor:
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
-        epochs: int = 200,
+        epochs: int = 100,
         batch_size: int = 32,
         lr: float = 1e-3
     ) -> dict:
@@ -335,7 +335,7 @@ class MultiModelRegressor:
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
-        criterion = nn.SmoothL1Loss()  # Huber loss — matches the fusion model
+        criterion = nn.SmoothL1Loss()  # Huber loss - matches the fusion model
         
         # OneCycleLR for baselines too
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -377,7 +377,7 @@ class MultiModelRegressor:
             status = ""
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                status = "✓ Best"
+                status = "Best"
             
             # Print progress every 10 epochs or first/last
             if epoch % 10 == 0 or epoch == epochs - 1 or status:
@@ -394,7 +394,7 @@ class MultiModelRegressor:
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
-        epochs: int = 200,
+        epochs: int = 100,
         plot_history: bool = True
     ):
         """Train all models"""
@@ -431,7 +431,7 @@ class MultiModelRegressor:
         self.trained['XGBoost'] = True
         print("  XGBoost training complete (no epochs - gradient boosting)")
         
-        print("\n✅ All models trained!")
+        print("\nAll models trained!")
         
         # Plot training history
         if plot_history:
@@ -466,7 +466,7 @@ class MultiModelRegressor:
         
         plt.tight_layout()
         plt.savefig('training_history.png', dpi=150)
-        print("\n📊 Training history plot saved to 'training_history.png'")
+        print("\nTraining history plot saved to 'training_history.png'")
     
     def evaluate_all(
         self,
@@ -618,8 +618,15 @@ class MultiModelRegressor:
         
         print(f"Models saved to {save_dir}")
     
-    def load_models(self, save_dir: Path):
-        """Load all trained models"""
+    def load_models(self, save_dir: Path, load_xgboost: bool = True):
+        """Load trained models.
+
+        Args:
+            save_dir: Directory containing saved model artifacts.
+            load_xgboost: Whether to load the pickled XGBoost artifact. Set
+                this to False in UI/server contexts because incompatible
+                XGBoost native libraries can segfault during unpickling.
+        """
         import joblib
         
         save_dir = Path(save_dir)
@@ -649,8 +656,11 @@ class MultiModelRegressor:
                     )
                     self.models[name].eval()
         
+        if not load_xgboost:
+            self.trained['XGBoost'] = False
+
         # Load XGBoost model
-        if self.trained.get('XGBoost', False):
+        if load_xgboost and self.trained.get('XGBoost', False):
             xgb_path = save_dir / 'xgboost_regressor.pkl'
             if xgb_path.exists():
                 self.models['XGBoost'].model = joblib.load(xgb_path)

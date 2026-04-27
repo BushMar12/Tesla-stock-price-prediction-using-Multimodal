@@ -17,7 +17,7 @@ for dir_path in [RAW_DATA_DIR, PROCESSED_DATA_DIR, MODELS_DIR]:
 
 # Stock settings
 STOCK_SYMBOL = "TSLA"
-START_DATE = "2010-06-29"
+START_DATE = "2021-01-01"
 END_DATE = None  # None means today
 
 # Feature settings
@@ -25,6 +25,8 @@ SEQUENCE_LENGTH = 60  # Number of days to look back
 PREDICTION_HORIZON = 1  # Days ahead to predict (legacy, single-step)
 PREDICTION_HORIZONS = [1, 3, 5, 7]  # Multi-day prediction horizons
 DIRECTION_RETURN_THRESHOLD = 0.005  # 0.5%; neutral band for direction classification
+USE_MARKET_CONTEXT = True  # Add SPY/VIX market context features when available
+MARKET_CONTEXT_CACHE = True  # Cache SPY/VIX downloads under data/raw/
 
 # Technical indicators to use
 TECHNICAL_INDICATORS = [
@@ -59,27 +61,35 @@ MODEL_CONFIG = {
 TRAINING_CONFIG = {
     "batch_size": 32,
     "learning_rate": 1e-4,
-    "epochs": 200,
+    "epochs": 100,
     "train_split": 0.8,
     "val_split": 0.1,
     "test_split": 0.1,
-    "regression_weight": 0.5,  # Weight for regression loss
-    "classification_weight": 0.5,  # Weight for classification loss
+    "regression_weight": 1.0,  # Weight for regression loss
+    "classification_weight": 0.1,  # Weight for classification loss
 }
 
 # Sentiment analysis settings
 SENTIMENT_CONFIG = {
+    "source": "synthetic",  # synthetic, rss, or alpha_vantage
     "use_finbert": True,
     "finbert_model": "ProsusAI/finbert",
     "max_headlines_per_day": 10,
     "sentiment_lookback_days": 3,
-    "use_real_data_fetch": True,
+    "use_real_data_fetch": False,
+    "alpha_vantage_api_key": os.getenv("ALPHA_VANTAGE_API_KEY"),
+    "alpha_vantage_start_date": "2021-01-01",
+    "alpha_vantage_chunk_days": 365,
+    "alpha_vantage_request_sleep": 12,
+    "alpha_vantage_limit": 1000,
+    "alpha_vantage_use_cache": True,
 }
 
 # Streamlit settings
 STREAMLIT_CONFIG = {
     "page_title": "Tesla Stock Predictor",
-    "page_icon": "📈",
+    "page_icon": None,
     "layout": "wide",
     "sentiment_use_real_data": False,
+    "sentiment_source": "synthetic",
 }

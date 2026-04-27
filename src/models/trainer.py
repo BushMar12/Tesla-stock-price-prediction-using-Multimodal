@@ -60,7 +60,7 @@ class CombinedLoss(nn.Module):
         self,
         regression_weight: float = TRAINING_CONFIG['regression_weight'],
         classification_weight: float = TRAINING_CONFIG['classification_weight'],
-        multi_day_weight: float = 0.3
+        multi_day_weight: float = 0.05
     ):
         super().__init__()
         
@@ -393,13 +393,33 @@ class Trainer:
         print(f"Model loaded from {path}")
 
 
-def train_model(splits: dict, return_scaler=None) -> tuple:
+def _update_preprocessing_metadata(**updates):
+    """Persist training-mode metadata alongside preprocessing metadata."""
+    metadata_path = MODELS_DIR / 'preprocessing_metadata.pkl'
+    if not metadata_path.exists():
+        return
+
+    metadata = joblib.load(metadata_path)
+    metadata.update(updates)
+    joblib.dump(metadata, metadata_path)
+
+
+def train_model(
+    splits: dict,
+    return_scaler=None,
+    use_cross_attention: bool = True,
+    training_mode: str = "current",
+    use_sentiment: bool = True
+) -> tuple:
     """
     Train the multimodal model.
     
     Args:
         splits: Dict with train/val/test data splits
         return_scaler: Scaler for inverse transforming returns to actual values
+        use_cross_attention: Whether the fusion model should use cross-attention
+        training_mode: Human-readable training mode saved with metadata
+        use_sentiment: Whether this run intentionally uses sentiment features
     
     Returns:
         Tuple of (trained model, trainer, history)
@@ -411,11 +431,20 @@ def train_model(splits: dict, return_scaler=None) -> tuple:
     
     print(f"Time-series features: {ts_input_size}")
     print(f"Sentiment features: {sentiment_input_size}")
+    print(f"Use sentiment: {use_sentiment and sentiment_input_size > 0}")
+    print(f"Use cross-attention: {use_cross_attention and sentiment_input_size > 0}")
     
     # Create model
     model = create_model(
         ts_input_size=ts_input_size,
-        sentiment_input_size=sentiment_input_size
+        sentiment_input_size=sentiment_input_size,
+        use_cross_attention=use_cross_attention
+    )
+
+    _update_preprocessing_metadata(
+        training_mode=training_mode,
+        use_sentiment=use_sentiment and sentiment_input_size > 0,
+        use_cross_attention=use_cross_attention and sentiment_input_size > 0,
     )
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")

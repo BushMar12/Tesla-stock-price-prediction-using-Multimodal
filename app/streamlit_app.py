@@ -243,7 +243,10 @@ def load_multi_models():
             input_size=metadata['input_size'],
             sequence_length=metadata['sequence_length']
         )
-        multi_model.load_models(MODELS_DIR)
+        # Do not load the pickled XGBoost artifact in Streamlit. If the
+        # installed xgboost native library differs from the one used when the
+        # pickle was created, unpickling can segfault the Python process.
+        multi_model.load_models(MODELS_DIR, load_xgboost=False)
         return multi_model
     except Exception as e:
         return None
@@ -451,7 +454,7 @@ def main():
     st.markdown("### Multimodal Deep Learning for Stock Price Prediction")
     
     # Sidebar
-    st.sidebar.title("⚙️ Settings")
+    st.sidebar.title("Settings")
     
     # Date range
     col1, col2 = st.sidebar.columns(2)
@@ -483,8 +486,9 @@ def main():
             df_with_indicators = calculate_all_indicators(df, add_targets=False)
             sentiment_df = fetch_sentiment_data(
                 df,
-                use_real_data=STREAMLIT_CONFIG["sentiment_use_real_data"],
+                use_real_data=STREAMLIT_CONFIG.get("sentiment_source") != "synthetic",
                 save=False,
+                source=STREAMLIT_CONFIG.get("sentiment_source", "synthetic"),
             )
         except Exception as e:
             st.error(f"Error loading data: {e}")
@@ -652,9 +656,9 @@ def main():
             st.markdown("---")
             
             # Direction Prediction (Classification)
-            st.subheader("📊 Direction Prediction (Classification)")
+            st.subheader("Direction Prediction (Classification)")
             
-            direction_labels = ['📉 DOWN', '➡️ NEUTRAL', '📈 UP']
+            direction_labels = ['DOWN', 'NEUTRAL', 'UP']
             
             direction = prediction['direction']
             confidence = prediction['confidence']
@@ -677,7 +681,7 @@ def main():
             
             # Warning
             st.warning("""
-            ⚠️ **Disclaimer**: This prediction is for educational purposes only. 
+            **Disclaimer**: This prediction is for educational purposes only. 
             Stock markets are inherently unpredictable, and this tool should not 
             be used for actual trading decisions.
             """)
@@ -782,7 +786,7 @@ def main():
             # Display saved metrics if available
             comparison_file = MODELS_DIR / 'model_comparison.csv'
             if comparison_file.exists():
-                st.subheader("📊 Test Set Performance Metrics")
+                st.subheader("Test Set Performance Metrics")
                 comparison_df = pd.read_csv(comparison_file)
                 
                 # Style the dataframe
@@ -828,9 +832,9 @@ def main():
             st.markdown("---")
             
             # Live predictions from all models
-            st.subheader("🔮 Live Predictions from All Models")
+            st.subheader("Live Predictions from All Models")
             
-            predict_btn = st.button("🎯 Get Predictions from All Models", use_container_width=True)
+            predict_btn = st.button("Get Predictions from All Models", use_container_width=True)
             
             if predict_btn:
                 with st.spinner("Getting predictions from LSTM, GRU, Transformer, and XGBoost..."):
@@ -850,7 +854,7 @@ def main():
                                 'Model': model_name,
                                 'Predicted Price': f"${pred_price:.2f}",
                                 'Change': f"{change:+.2f}%",
-                                'Direction': '📈 Up' if change > 0 else '📉 Down' if change < 0 else '➡️ Neutral'
+                                'Direction': 'Up' if change > 0 else 'Down' if change < 0 else 'Neutral'
                             })
                         
                         pred_df = pd.DataFrame(pred_data)
@@ -875,18 +879,18 @@ def main():
                         ensemble_change = ((ensemble_price - current_price) / current_price) * 100
                         
                         st.markdown("---")
-                        st.subheader("🎯 Ensemble Prediction (Average)")
+                        st.subheader("Ensemble Prediction (Average)")
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             st.metric("Current Price", f"${current_price:.2f}")
                         with col2:
                             st.metric("Ensemble Prediction", f"${ensemble_price:.2f}", f"{ensemble_change:+.2f}%")
                         with col3:
-                            direction = '📈 Up' if ensemble_change > 0.5 else '📉 Down' if ensemble_change < -0.5 else '➡️ Neutral'
+                            direction = 'Up' if ensemble_change > 0.5 else 'Down' if ensemble_change < -0.5 else 'Neutral'
                             st.metric("Direction", direction)
             
             # Model descriptions
-            with st.expander("📚 Model Descriptions"):
+            with st.expander("Model Descriptions"):
                 st.markdown("""
                 | Model | Description | Strengths |
                 |-------|-------------|-----------|

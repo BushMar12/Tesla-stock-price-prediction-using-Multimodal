@@ -4,10 +4,16 @@ Technical indicators calculation for stock data
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from typing import Optional
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from config import DIRECTION_RETURN_THRESHOLD
+from config import (
+    DIRECTION_RETURN_THRESHOLD,
+    MARKET_CONTEXT_CACHE,
+    RAW_DATA_DIR,
+    USE_MARKET_CONTEXT,
+)
 
 
 def classify_direction_by_return(returns: pd.Series, threshold: float = DIRECTION_RETURN_THRESHOLD) -> pd.Series:
@@ -201,54 +207,98 @@ def add_multi_day_targets(df: pd.DataFrame, horizons: list = None) -> pd.DataFra
     return df
 
 
-def add_market_context(df: pd.DataFrame) -> pd.DataFrame:
-    """Add market context features: SPY (S&P 500) and VIX (Volatility Index)"""
-    import yfinance as yf
-    
-    start = df['date'].min().strftime('%Y-%m-%d')
-    end = df['date'].max().strftime('%Y-%m-%d')
-    
+def _load_or_fetch_market_close(
+    symbol: str,
+    output_col: str,
+    cache_name: str,
+    start: str,
+    end: str
+) -> Optional[pd.DataFrame]:
+    """Load market close data from cache, falling back to Yahoo Finance."""
+    cache_path = RAW_DATA_DIR / cache_name
+
+    if MARKET_CONTEXT_CACHE and cache_path.exists():
+        cached = pd.read_csv(cache_path)
+        if {'date', output_col}.issubset(cached.columns):
+            cached['date'] = pd.to_datetime(cached['date'])
+            print(f"Loaded cached {symbol} market context from {cache_path}")
+            return cached[['date', output_col]]
+        print(f"Warning: Ignoring invalid {symbol} market context cache at {cache_path}")
+
     try:
-        spy = yf.download("SPY", start=start, end=end, progress=False)
-        if not spy.empty:
-            spy = spy.reset_index()
-            # Handle multi-level columns from yfinance
-            if isinstance(spy.columns, pd.MultiIndex):
-                spy.columns = [col[0] if col[1] == '' or col[1] == 'SPY' else col[0] for col in spy.columns]
-            spy['Date'] = pd.to_datetime(spy['Date']).dt.tz_localize(None)
-            spy = spy.rename(columns={'Date': 'date', 'Close': 'spy_close'})
-            spy['spy_return'] = spy['spy_close'].pct_change()
-            df = df.merge(spy[['date', 'spy_close', 'spy_return']], on='date', how='left')
-            df['tsla_vs_spy'] = df['returns'] - df['spy_return']  # Alpha
-            df[['spy_close', 'spy_return', 'tsla_vs_spy']] = df[['spy_close', 'spy_return', 'tsla_vs_spy']].ffill()
-        else:
-            print("Warning: SPY data empty, skipping market context")
-            df['spy_close'] = 0
-            df['spy_return'] = 0
-            df['tsla_vs_spy'] = 0
+        import yfinance as yf
+
+        market_df = yf.download(symbol, start=start, end=end, progress=False)
+        if market_df.empty:
+            return None
+
+        market_df = market_df.reset_index()
+        if isinstance(market_df.columns, pd.MultiIndex):
+            market_df.columns = [
+                col[0] if col[1] == '' or col[1] == symbol else col[0]
+                for col in market_df.columns
+            ]
+
+        market_df['Date'] = pd.to_datetime(market_df['Date']).dt.tz_localize(None)
+        market_df = market_df.rename(columns={'Date': 'date', 'Close': output_col})
+        market_df = market_df[['date', output_col]]
+
+        if MARKET_CONTEXT_CACHE:
+            market_df.to_csv(cache_path, index=False)
+            print(f"Saved {symbol} market context to {cache_path}")
+
+        return market_df
     except Exception as e:
-        print(f"Warning: Could not fetch SPY data: {e}")
+        print(f"Warning: Could not fetch {symbol} data: {e}")
+        return None
+
+
+def add_market_context(df: pd.DataFrame) -> pd.DataFrame:
+    """Add market context features: SPY (S&P 500) and VIX (Volatility Index)."""
+    if not USE_MARKET_CONTEXT:
         df['spy_close'] = 0
         df['spy_return'] = 0
         df['tsla_vs_spy'] = 0
-    
-    try:
-        vix = yf.download("^VIX", start=start, end=end, progress=False)
-        if not vix.empty:
-            vix = vix.reset_index()
-            if isinstance(vix.columns, pd.MultiIndex):
-                vix.columns = [col[0] if col[1] == '' or col[1] == '^VIX' else col[0] for col in vix.columns]
-            vix['Date'] = pd.to_datetime(vix['Date']).dt.tz_localize(None)
-            vix = vix.rename(columns={'Date': 'date', 'Close': 'vix'})
-            df = df.merge(vix[['date', 'vix']], on='date', how='left')
-            df['vix'] = df['vix'].ffill()
-        else:
-            print("Warning: VIX data empty, skipping")
-            df['vix'] = 20.0
-    except Exception as e:
-        print(f"Warning: Could not fetch VIX data: {e}")
         df['vix'] = 20.0
-    
+        return df
+
+    start = df['date'].min().strftime('%Y-%m-%d')
+    end = df['date'].max().strftime('%Y-%m-%d')
+
+    spy = _load_or_fetch_market_close(
+        symbol="SPY",
+        output_col="spy_close",
+        cache_name="SPY_market_context.csv",
+        start=start,
+        end=end
+    )
+    if spy is not None:
+        spy['spy_return'] = spy['spy_close'].pct_change()
+        df = df.merge(spy[['date', 'spy_close', 'spy_return']], on='date', how='left')
+        df['tsla_vs_spy'] = df['returns'] - df['spy_return']  # Alpha
+        df[['spy_close', 'spy_return', 'tsla_vs_spy']] = (
+            df[['spy_close', 'spy_return', 'tsla_vs_spy']].ffill().fillna(0)
+        )
+    else:
+        print("Warning: SPY data unavailable, using neutral market context")
+        df['spy_close'] = 0
+        df['spy_return'] = 0
+        df['tsla_vs_spy'] = 0
+
+    vix = _load_or_fetch_market_close(
+        symbol="^VIX",
+        output_col="vix",
+        cache_name="VIX_market_context.csv",
+        start=start,
+        end=end
+    )
+    if vix is not None:
+        df = df.merge(vix[['date', 'vix']], on='date', how='left')
+        df['vix'] = df['vix'].ffill().fillna(20.0)
+    else:
+        print("Warning: VIX data unavailable, using neutral market context")
+        df['vix'] = 20.0
+
     return df
 
 

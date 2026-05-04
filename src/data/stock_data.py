@@ -11,6 +11,15 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from config import STOCK_SYMBOL, START_DATE, END_DATE, RAW_DATA_DIR
 
 
+def parse_stock_dates(date_series: pd.Series) -> pd.Series:
+    """Parse cached stock dates that may be ISO or day/month/year formatted."""
+    parsed = pd.to_datetime(date_series, format="mixed", dayfirst=True, errors="coerce")
+    if parsed.isna().any():
+        bad_values = date_series[parsed.isna()].head(5).tolist()
+        raise ValueError(f"Could not parse stock date values: {bad_values}")
+    return parsed
+
+
 def fetch_stock_data(
     symbol: str = STOCK_SYMBOL,
     start_date: str = START_DATE,
@@ -108,7 +117,7 @@ def load_stock_data(symbol: str = STOCK_SYMBOL) -> pd.DataFrame:
         return fetch_stock_data(symbol)
     
     df = pd.read_csv(file_path)
-    df['date'] = pd.to_datetime(df['date'])
+    df['date'] = parse_stock_dates(df['date'])
     
     return df
 

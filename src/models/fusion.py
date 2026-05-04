@@ -3,12 +3,11 @@ Multimodal fusion model combining time-series and sentiment encoders
 """
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from config import MODEL_CONFIG, PREDICTION_HORIZONS
+from config import MODEL_CONFIG
 from src.models.time_series import TimeSeriesEncoder
 from src.models.text_encoder import SentimentEncoder, TemporalSentimentEncoder
 
@@ -33,7 +32,7 @@ class CrossModalAttention(nn.Module):
         Apply cross-modal multi-head attention.
         
         Args:
-            ts_sequence: Full LSTM output sequence (batch, seq_len, ts_dim)
+            ts_sequence: Full time-series encoder sequence (batch, seq_len, ts_dim)
             sentiment_features: Sentiment features (batch, sentiment_dim)
         
         Returns:
@@ -54,12 +53,8 @@ class CrossModalAttention(nn.Module):
 
 
 class MultimodalFusionModel(nn.Module):
-    """
-    Multimodal model combining time-series and sentiment for stock prediction.
-    Supports both regression (price prediction) and classification (direction).
-    Now supports multi-day prediction horizons.
-    """
-    
+    """Two-stream multimodal model predicting next-day return."""
+
     def __init__(
         self,
         ts_input_size: int,
@@ -67,18 +62,14 @@ class MultimodalFusionModel(nn.Module):
         ts_hidden_size: int = MODEL_CONFIG['ts_hidden_size'],
         sentiment_hidden_size: int = MODEL_CONFIG['sentiment_hidden_dim'],
         fusion_hidden_size: int = MODEL_CONFIG['fusion_hidden_dim'],
-        num_classes: int = MODEL_CONFIG['num_classes'],
         dropout: float = MODEL_CONFIG['fusion_dropout'],
         use_cross_attention: bool = True,
-        prediction_horizons: list = None
     ):
         super().__init__()
-        
+
         self.use_cross_attention = use_cross_attention
         self.sentiment_input_size = sentiment_input_size
-        self.prediction_horizons = prediction_horizons or PREDICTION_HORIZONS
-        self.n_horizons = len(self.prediction_horizons)
-        
+
         # Time-series encoder
         self.ts_encoder = TimeSeriesEncoder(
             input_size=ts_input_size,
@@ -122,28 +113,13 @@ class MultimodalFusionModel(nn.Module):
             nn.Dropout(dropout)
         )
         
-        # Regression head — single output (backward compat)
+        # Next-day return regression head — single output
         self.regression_head = nn.Sequential(
             nn.Linear(fusion_hidden_size // 2, fusion_hidden_size // 4),
             nn.ReLU(),
             nn.Linear(fusion_hidden_size // 4, 1)
         )
-        
-        # Multi-day regression head — outputs one return per horizon
-        self.multi_regression_head = nn.Sequential(
-            nn.Linear(fusion_hidden_size // 2, fusion_hidden_size // 4),
-            nn.ReLU(),
-            nn.Linear(fusion_hidden_size // 4, self.n_horizons)
-        )
-        
-        # Classification head (direction prediction)
-        self.classification_head = nn.Sequential(
-            nn.Linear(fusion_hidden_size // 2, fusion_hidden_size // 4),
-            nn.ReLU(),
-            nn.Linear(fusion_hidden_size // 4, num_classes)
-        )
-        
-        # Initialize weights
+
         self._init_weights()
     
     def _init_weights(self):
@@ -161,102 +137,59 @@ class MultimodalFusionModel(nn.Module):
     ) -> dict:
         """
         Forward pass.
-        
-        Args:
-            ts_input: Time-series input (batch, seq_len, ts_features)
-            sentiment_input: Sentiment input (batch, seq_len, sentiment_features)
-        
-        Returns:
-            Dict with regression output, multi-day regression,
-            classification logits, and attention weights
+
+        Returns dict with:
+            - 'regression': next-day return prediction (batch,)
+            - 'ts_attention': time-series attention weights
+            - 'fused_features': fused representation (for downstream analysis)
         """
-        # Encode time-series — get both pooled output and full sequence
-        ts_encoded, ts_attention = self.ts_encoder(ts_input)
-        
-        # Also get full sequence for cross-modal attention
-        ts_projected = self.ts_encoder.input_projection(ts_input)
-        ts_full_seq, _ = self.ts_encoder.lstm(ts_projected)
-        
-        # Encode sentiment if available
+        ts_encoded, ts_attention, ts_full_seq = self.ts_encoder.encode_with_attention(ts_input)
+
         if self.sentiment_encoder is not None and sentiment_input is not None:
             sentiment_encoded = self.sentiment_encoder(sentiment_input)
-            
-            # Cross-modal attention (fixed: uses full temporal sequence)
+
             if self.use_cross_attention:
                 ts_cross_attended = self.cross_attention(ts_full_seq, sentiment_encoded)
-                ts_encoded = ts_encoded + ts_cross_attended  # Residual connection
-            
-            # Concatenate for fusion
+                ts_encoded = ts_encoded + ts_cross_attended
+
             fused = torch.cat([ts_encoded, sentiment_encoded], dim=-1)
         else:
             fused = ts_encoded
-        
-        # Fusion
+
         fused = self.fusion(fused)
-        
-        # Output heads
         regression_output = self.regression_head(fused).squeeze(-1)
-        multi_regression_output = self.multi_regression_head(fused)
-        classification_logits = self.classification_head(fused)
-        
+
         return {
             'regression': regression_output,
-            'multi_regression': multi_regression_output,
-            'classification': classification_logits,
             'ts_attention': ts_attention,
             'fused_features': fused
         }
-    
+
     def predict(
         self,
         ts_input: torch.Tensor,
         sentiment_input: torch.Tensor = None
     ) -> dict:
-        """
-        Make predictions (inference mode).
-        
-        Returns:
-            Dict with predicted price, multi-day returns, and direction
-        """
+        """Inference helper. Returns next-day return prediction and attention."""
         self.eval()
         with torch.no_grad():
             outputs = self.forward(ts_input, sentiment_input)
-            
-            direction_probs = F.softmax(outputs['classification'], dim=-1)
-            direction_pred = torch.argmax(direction_probs, dim=-1)
-            
             return {
                 'price': outputs['regression'],
-                'multi_day': outputs['multi_regression'],
-                'direction': direction_pred,
-                'direction_probs': direction_probs,
                 'attention': outputs['ts_attention']
             }
 
 
 class EnsembleModel(nn.Module):
-    """
-    Ensemble of multiple models for more robust predictions.
-    """
-    
+    """Ensemble that averages next-day return predictions across models."""
+
     def __init__(self, models: list):
         super().__init__()
         self.models = nn.ModuleList(models)
-    
+
     def forward(self, ts_input: torch.Tensor, sentiment_input: torch.Tensor = None) -> dict:
-        """Average predictions from all models"""
-        all_reg = []
-        all_cls = []
-        
-        for model in self.models:
-            out = model(ts_input, sentiment_input)
-            all_reg.append(out['regression'])
-            all_cls.append(out['classification'])
-        
-        return {
-            'regression': torch.stack(all_reg).mean(dim=0),
-            'classification': torch.stack(all_cls).mean(dim=0)
-        }
+        all_reg = [m(ts_input, sentiment_input)['regression'] for m in self.models]
+        return {'regression': torch.stack(all_reg).mean(dim=0)}
 
 
 def create_model(
@@ -301,7 +234,5 @@ if __name__ == "__main__":
     print(f"Time-series input: {ts_input.shape}")
     print(f"Sentiment input: {sentiment_input.shape}")
     print(f"Regression output: {outputs['regression'].shape}")
-    print(f"Multi-day regression output: {outputs['multi_regression'].shape}")
-    print(f"Classification output: {outputs['classification'].shape}")
     print(f"Attention weights: {outputs['ts_attention'].shape}")
     print(f"\nTotal parameters: {sum(p.numel() for p in model.parameters()):,}")

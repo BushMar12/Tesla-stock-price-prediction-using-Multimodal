@@ -1,0 +1,23 @@
+{
+  "mode": "sentiment-no-cross-attention",
+  "label": "Sentiment, no attention",
+  "sentiment_source": "synthetic",
+  "params": 1341655,
+  "rmse": 10.959094365692854,
+  "mae": 8.897146628671507,
+  "mape": 2.1108731902646003,
+  "train_loss_final": 0.011369759580702521,
+  "val_loss_final": 0.005620642041321844,
+  "train_val_gap": -0.005749117539380677,
+  "best_epoch": 7,
+  "epochs": 50,
+  "best_model_path": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_sentiment_no_cross_attention__best.pt",
+  "final_model_path": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_sentiment_no_cross_attention__final.pt",
+  "copied_artifacts": {
+    "best_model": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_sentiment_no_cross_attention__best.pt",
+    "final_model": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_sentiment_no_cross_attention__final.pt",
+    "metadata": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_sentiment_no_cross_attention__metadata.pkl",
+    "feature_scaler": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_sentiment_no_cross_attention__feature_scaler.pkl",
+    "return_scaler": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_sentiment_no_cross_attention__return_scaler.pkl"
+  }
+}

@@ -18,22 +18,28 @@ for dir_path in [RAW_DATA_DIR, PROCESSED_DATA_DIR, MODELS_DIR]:
 # Stock settings
 STOCK_SYMBOL = "TSLA"
 START_DATE = "2021-01-01"
-END_DATE = None  # None means today
+END_DATE = "2026-04-21"  # None means today
 
 # Feature settings
 SEQUENCE_LENGTH = 60  # Number of days to look back
-PREDICTION_HORIZON = 1  # Days ahead to predict (legacy, single-step)
-PREDICTION_HORIZONS = [1, 3, 5, 7]  # Multi-day prediction horizons
-DIRECTION_RETURN_THRESHOLD = 0.005  # 0.5%; neutral band for direction classification
-USE_MARKET_CONTEXT = True  # Add SPY/VIX market context features when available
+PREDICTION_HORIZON = 1  # Days ahead to predict (next-day only)
+USE_MARKET_CONTEXT = False  # Current feature set excludes SPY/VIX market context
 MARKET_CONTEXT_CACHE = True  # Cache SPY/VIX downloads under data/raw/
 
 # Technical indicators to use
 TECHNICAL_INDICATORS = [
-    'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26',
-    'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist',
+    'SMA_20', 'SMA_50',
+    'RSI_14',
     'BB_Upper', 'BB_Middle', 'BB_Lower',
-    'ATR_14', 'OBV', 'VWAP'
+]
+
+# Active price/technical input features.
+# Sentiment features are selected separately when a sentiment mode is enabled.
+PRICE_FEATURE_COLUMNS = [
+    'open', 'high', 'low', 'close', 'volume',
+    'SMA_20', 'SMA_50',
+    'RSI_14',
+    'BB_Upper', 'BB_Middle', 'BB_Lower',
 ]
 
 # Model hyperparameters
@@ -52,26 +58,30 @@ MODEL_CONFIG = {
     # Fusion layer
     "fusion_hidden_dim": 256,
     "fusion_dropout": 0.3,
-    
-    # Output
-    "num_classes": 3,  # Down, Neutral, Up direction classes
 }
 
 # Training settings
+RANDOM_SEED = 42
+DETERMINISTIC_TRAINING = True
+
 TRAINING_CONFIG = {
     "batch_size": 32,
     "learning_rate": 1e-4,
-    "epochs": 100,
+    "epochs": 50,
     "train_split": 0.8,
     "val_split": 0.1,
     "test_split": 0.1,
-    "regression_weight": 1.0,  # Weight for regression loss
-    "classification_weight": 0.1,  # Weight for classification loss
+    # LR schedule (ReduceLROnPlateau on val MAE in dollar space)
+    "lr_patience": 5,
+    "lr_factor": 0.5,
 }
+
+# Checkpoint version tag — bump when state_dict shape changes so loaders fail loudly.
+MODEL_VERSION = "next-day-only-v2-seq60"
 
 # Sentiment analysis settings
 SENTIMENT_CONFIG = {
-    "source": "synthetic",  # synthetic, rss, or alpha_vantage
+    "source": "alpha_vantage",  # synthetic, rss, or alpha_vantage
     "use_finbert": True,
     "finbert_model": "ProsusAI/finbert",
     "max_headlines_per_day": 10,
@@ -91,5 +101,5 @@ STREAMLIT_CONFIG = {
     "page_icon": None,
     "layout": "wide",
     "sentiment_use_real_data": False,
-    "sentiment_source": "synthetic",
+    "sentiment_source": "alpha_vantage",
 }

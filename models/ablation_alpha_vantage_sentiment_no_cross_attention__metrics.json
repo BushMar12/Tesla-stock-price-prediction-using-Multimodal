@@ -1,0 +1,23 @@
+{
+  "mode": "sentiment-no-cross-attention",
+  "label": "Sentiment, no attention",
+  "sentiment_source": "alpha_vantage",
+  "params": 1341655,
+  "rmse": 13.296453324251281,
+  "mae": 10.620166855816507,
+  "mape": 2.4921507639479734,
+  "train_loss_final": 0.013806847797241062,
+  "val_loss_final": 0.008159540011547506,
+  "train_val_gap": -0.005647307785693556,
+  "best_epoch": 1,
+  "epochs": 50,
+  "best_model_path": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_sentiment_no_cross_attention__best.pt",
+  "final_model_path": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_sentiment_no_cross_attention__final.pt",
+  "copied_artifacts": {
+    "best_model": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_sentiment_no_cross_attention__best.pt",
+    "final_model": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_sentiment_no_cross_attention__final.pt",
+    "metadata": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_sentiment_no_cross_attention__metadata.pkl",
+    "feature_scaler": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_sentiment_no_cross_attention__feature_scaler.pkl",
+    "return_scaler": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_sentiment_no_cross_attention__return_scaler.pkl"
+  }
+}

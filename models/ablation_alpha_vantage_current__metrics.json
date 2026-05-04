@@ -1,0 +1,23 @@
+{
+  "mode": "current",
+  "label": "Sentiment + attention",
+  "sentiment_source": "alpha_vantage",
+  "params": 1671127,
+  "rmse": 11.751260205051441,
+  "mae": 9.526845836469064,
+  "mape": 2.2483155422279197,
+  "train_loss_final": 0.008844326970574912,
+  "val_loss_final": 0.007258797064423561,
+  "train_val_gap": -0.0015855299061513506,
+  "best_epoch": 17,
+  "epochs": 50,
+  "best_model_path": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_current__best.pt",
+  "final_model_path": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_current__final.pt",
+  "copied_artifacts": {
+    "best_model": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_current__best.pt",
+    "final_model": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_current__final.pt",
+    "metadata": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_current__metadata.pkl",
+    "feature_scaler": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_current__feature_scaler.pkl",
+    "return_scaler": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_alpha_vantage_current__return_scaler.pkl"
+  }
+}

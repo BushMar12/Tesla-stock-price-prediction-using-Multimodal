@@ -1,0 +1,2 @@
+Configuration,Model,RMSE,MAE,MAPE,MSE,Random Seed,Deterministic Training
+technical_sentiment,LSTM,10.913689654211616,8.852618500453861,2.1011147707075333,119.10862186844565,42,True

@@ -1,0 +1,23 @@
+{
+  "mode": "current",
+  "label": "Sentiment + attention",
+  "sentiment_source": "synthetic",
+  "params": 1671127,
+  "rmse": 12.71987866139824,
+  "mae": 10.327069791040984,
+  "mape": 2.4306057658590268,
+  "train_loss_final": 0.00815610939025646,
+  "val_loss_final": 0.008053848636336625,
+  "train_val_gap": -0.00010226075391983613,
+  "best_epoch": 19,
+  "epochs": 50,
+  "best_model_path": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_current__best.pt",
+  "final_model_path": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_current__final.pt",
+  "copied_artifacts": {
+    "best_model": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_current__best.pt",
+    "final_model": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_current__final.pt",
+    "metadata": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_current__metadata.pkl",
+    "feature_scaler": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_current__feature_scaler.pkl",
+    "return_scaler": "C:\\Users\\Bush\\OneDrive\\OneDrive - UTS\\UTS Master\\49275 Neural Networks and Fuzzy Logic\\Project\\Stock price prediction using multimodal\\models\\ablation_synthetic_current__return_scaler.pkl"
+  }
+}

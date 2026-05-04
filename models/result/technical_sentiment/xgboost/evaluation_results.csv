@@ -1,0 +1,2 @@
+Configuration,Model,RMSE,MAE,MAPE,MSE,Random Seed,Deterministic Training
+technical_sentiment,XGBoost,13.011518733670673,10.48256648114205,2.4813671569411904,169.29961975666288,42,True

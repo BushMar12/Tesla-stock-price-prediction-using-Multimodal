@@ -1,0 +1,5 @@
+Multimodal validation verdict
+============================
+Best MAE mode: current ($9.53)
+Current-mode final train/val gap ratio: -17.93%
+Verdict: current multimodal fusion is helping on MAE; additional capacity may be worth testing after regularization checks.

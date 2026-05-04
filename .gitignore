@@ -120,3 +120,5 @@ models/*.pkl
 # Key files
 .key.txt
 *.pdf
+
+CODE_REVIEW.md  

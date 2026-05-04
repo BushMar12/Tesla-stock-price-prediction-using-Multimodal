@@ -1,0 +1,5 @@
+History Epochs,Best Epoch,Final Train Loss,Final Val Loss,Best Val MAE,Final Val MAE,Final Learning Rate,Final Train MAE Scaled Return,Final Val MAE Scaled Return,Best Val MAE Scaled Return,Configuration,Model,Random Seed,Deterministic Training
+50,25,0.005413018545368686,0.00468597374856472,8.736544226600666,9.14982286474659,3.125e-06,,,,technical_sentiment,LSTM,42,True
+50,5,0.0051363540114834905,0.004895078018307686,8.831636806040331,9.517866290936363,7.8125e-07,,,,technical_sentiment,GRU,42,True
+50,11,0.00586638214008417,0.004799738060683012,8.873965162203806,9.325681127242271,1.5625e-06,,,,technical_sentiment,Transformer,42,True
+2000,1,,,,,,0.0098543411152031,0.07513413377224452,0.0715534630275908,technical_sentiment,XGBoost,42,True

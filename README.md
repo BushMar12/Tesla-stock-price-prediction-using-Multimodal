@@ -12,7 +12,7 @@ The core prediction target is next-day return:
 predicted_price = today_close * (1 + predicted_return)
 ```
 
-Predicting returns is generally more stable than predicting raw prices directly. The project also includes multi-day return heads for 1, 3, 5, and 7 day horizons, but next-day prediction is the primary objective.
+Predicting returns is generally more stable than predicting raw prices directly. The current project scope is next-day prediction only.
 
 ## Current Project Settings
 
@@ -22,8 +22,7 @@ Key defaults in `config.py`:
 STOCK_SYMBOL = "TSLA"
 START_DATE = "2021-01-01"
 SEQUENCE_LENGTH = 60
-PREDICTION_HORIZONS = [1, 3, 5, 7]
-DIRECTION_RETURN_THRESHOLD = 0.005
+PREDICTION_HORIZON = 1
 
 TRAINING_CONFIG = {
     "batch_size": 32,
@@ -32,12 +31,10 @@ TRAINING_CONFIG = {
     "train_split": 0.8,
     "val_split": 0.1,
     "test_split": 0.1,
-    "regression_weight": 1.0,
-    "classification_weight": 0.1,
 }
 ```
 
-The multimodal trainer also uses `multi_day_weight = 0.05`, so multi-day prediction is auxiliary.
+The multimodal trainer optimizes only the next-day return regression objective.
 
 ## Features
 
@@ -64,11 +61,9 @@ Price/technical stream -> TimeSeriesEncoder
 Sentiment stream       -> TemporalSentimentEncoder
 ```
 
-If enabled, cross-modal attention lets the time-series sequence attend to the sentiment representation. The fused representation is passed into:
+If enabled, cross-modal attention lets the time-series sequence attend to the sentiment representation. The fused representation is passed into one output head:
 
 - 1-day return regression head
-- multi-day return regression head
-- Down/Neutral/Up classification head
 
 ### Standalone Baselines
 
@@ -208,17 +203,8 @@ Secondary metrics:
 
 - **RMSE**: root mean squared dollar error
 - **MAPE**: mean absolute percentage error
-- **Direction Accuracy**: 3-class Down/Neutral/Up classification accuracy
 
-Direction classes are based on next-day return:
-
-```text
-return < -0.5%       -> Down
--0.5% to +0.5%      -> Neutral
-return > +0.5%      -> Up
-```
-
-Because the model is optimized mainly for regression, direction accuracy is treated as secondary.
+The model is evaluated as a next-day price predictor.
 
 ## Streamlit Dashboard
 
@@ -336,7 +322,7 @@ zsh run_streamlit_safe.sh
 - RSS sentiment is not a true historical sentiment source.
 - Alpha Vantage free-tier API limits may require multiple days to fetch a full historical cache.
 - A fixed chronological train/validation/test split is useful, but walk-forward validation would be stronger.
-- Multi-day forecasting and direction classification are secondary; next-day MAE is the main evaluation target.
+- The current implementation is intentionally limited to next-day price prediction.
 
 ## References
 

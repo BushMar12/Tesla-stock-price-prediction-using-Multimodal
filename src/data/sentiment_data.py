@@ -27,6 +27,15 @@ SENTIMENT_COLUMNS = [
 ]
 
 
+def _parse_cached_dates(date_series: pd.Series, field_name: str = "date") -> pd.Series:
+    """Parse cached CSV dates that may be ISO or day/month/year formatted."""
+    parsed = pd.to_datetime(date_series, format="mixed", dayfirst=True, errors="coerce")
+    if parsed.isna().any():
+        bad_values = date_series[parsed.isna()].head(5).tolist()
+        raise ValueError(f"Could not parse {field_name} values: {bad_values}")
+    return parsed
+
+
 def _add_sentiment_lags(df: pd.DataFrame) -> pd.DataFrame:
     """Add lagged sentiment features used by the multimodal model."""
     df = df.sort_values('date').copy()
@@ -37,9 +46,9 @@ def _add_sentiment_lags(df: pd.DataFrame) -> pd.DataFrame:
 
 def _align_sentiment_to_stock_dates(stock_df: pd.DataFrame, daily_sentiment: pd.DataFrame) -> pd.DataFrame:
     """Align daily sentiment rows to stock trading dates and fill missing dates as neutral."""
-    stock_dates = pd.DataFrame({'date': pd.to_datetime(stock_df['date']).dt.date})
+    stock_dates = pd.DataFrame({'date': _parse_cached_dates(stock_df['date'], "stock date").dt.date})
     daily = daily_sentiment.copy()
-    daily['date'] = pd.to_datetime(daily['date']).dt.date
+    daily['date'] = _parse_cached_dates(daily['date'], "sentiment date").dt.date
 
     merged = stock_dates.merge(daily, on='date', how='left')
     merged = merged.fillna({
@@ -342,7 +351,7 @@ def fetch_alpha_vantage_news_sentiment(stock_df: pd.DataFrame, save: bool = True
 
     if SENTIMENT_CONFIG.get("alpha_vantage_use_cache", True) and daily_cache_path.exists():
         cached = pd.read_csv(daily_cache_path)
-        cached['date'] = pd.to_datetime(cached['date']).dt.date
+        cached['date'] = _parse_cached_dates(cached['date'], "Alpha Vantage daily cache date").dt.date
         print(f"Loaded cached Alpha Vantage sentiment from {daily_cache_path}")
         return cached[SENTIMENT_COLUMNS]
 
@@ -353,8 +362,8 @@ def fetch_alpha_vantage_news_sentiment(stock_df: pd.DataFrame, save: bool = True
             "Set it in your shell before training."
         )
 
-    stock_start = pd.to_datetime(stock_df['date']).min()
-    stock_end = pd.to_datetime(stock_df['date']).max()
+    stock_start = _parse_cached_dates(stock_df['date'], "stock date").min()
+    stock_end = _parse_cached_dates(stock_df['date'], "stock date").max()
     configured_start = pd.to_datetime(SENTIMENT_CONFIG.get("alpha_vantage_start_date") or stock_start)
     start = max(stock_start, configured_start)
     end = stock_end
@@ -367,10 +376,10 @@ def fetch_alpha_vantage_news_sentiment(stock_df: pd.DataFrame, save: bool = True
     if SENTIMENT_CONFIG.get("alpha_vantage_use_cache", True) and raw_cache_path.exists():
         cached_raw = pd.read_csv(raw_cache_path)
         if not cached_raw.empty:
-            cached_raw['date'] = pd.to_datetime(cached_raw['date']).dt.date
-            cached_raw['published_at'] = pd.to_datetime(cached_raw['published_at'])
+            cached_raw['date'] = _parse_cached_dates(cached_raw['date'], "Alpha Vantage raw cache date").dt.date
+            cached_raw['published_at'] = pd.to_datetime(cached_raw['published_at'], format="mixed", errors="coerce")
             records = cached_raw.to_dict('records')
-            last_cached_date = pd.to_datetime(cached_raw['date']).max()
+            last_cached_date = _parse_cached_dates(cached_raw['date'], "Alpha Vantage raw cache date").max()
             if pd.notna(last_cached_date):
                 resume_date = last_cached_date + pd.Timedelta(days=1)
                 if resume_date > start:

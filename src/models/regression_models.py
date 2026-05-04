@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from config import MODEL_CONFIG
+from config import MODEL_CONFIG, TRAINING_CONFIG, MODELS_DIR
 
 
 class PositionalEncoding(nn.Module):
@@ -229,11 +229,16 @@ class XGBoostRegressor:
     def __init__(self, **kwargs):
         self.model_name = "XGBoost"
         self.model = None
+        # Defaults tuned for noisy daily-return targets: small eta + many
+        # estimators give the booster room to find signal.
         self.params = {
-            'n_estimators': kwargs.get('n_estimators', 400),
+            'n_estimators': kwargs.get('n_estimators', 2000),
             'max_depth': kwargs.get('max_depth', 4),
-            'learning_rate': kwargs.get('learning_rate', 0.05),
+            'learning_rate': kwargs.get('learning_rate', 0.01),
             'subsample': kwargs.get('subsample', 0.8),
+            'colsample_bytree': kwargs.get('colsample_bytree', 0.8),
+            'min_child_weight': kwargs.get('min_child_weight', 5),
+            'reg_lambda': kwargs.get('reg_lambda', 1.0),
             'random_state': kwargs.get('random_state', 42),
             'n_jobs': kwargs.get('n_jobs', 1),
         }
@@ -256,24 +261,52 @@ class XGBoostRegressor:
             raise ValueError("XGBoost target contains NaN or infinite values")
         return y
     
-    def fit(self, X: np.ndarray, y: np.ndarray):
-        """Train the XGBoost model"""
+    def fit(self, X: np.ndarray, y: np.ndarray, X_val: np.ndarray = None, y_val: np.ndarray = None):
+        """Train the XGBoost model and record validation metrics when provided."""
         from xgboost import XGBRegressor
 
         X = self._prepare_features(X)
         y = self._prepare_target(y)
 
-        self.model = XGBRegressor(
+        kwargs = dict(
             n_estimators=self.params["n_estimators"],
             max_depth=self.params["max_depth"],
             learning_rate=self.params["learning_rate"],
             subsample=self.params["subsample"],
+            colsample_bytree=self.params["colsample_bytree"],
+            min_child_weight=self.params["min_child_weight"],
+            reg_lambda=self.params["reg_lambda"],
             random_state=self.params["random_state"],
             n_jobs=self.params["n_jobs"],
             verbosity=0,
         )
-        self.model.fit(X, y)
+
+        if X_val is not None and y_val is not None:
+            X_val = self._prepare_features(X_val)
+            y_val = self._prepare_target(y_val)
+            kwargs["eval_metric"] = "mae"
+            self.model = XGBRegressor(**kwargs)
+            self.model.fit(X, y, eval_set=[(X, y), (X_val, y_val)], verbose=False)
+        else:
+            self.model = XGBRegressor(**kwargs)
+            self.model.fit(X, y)
         return self
+
+    def training_history(self) -> dict:
+        """Return XGBoost train/validation MAE history when available."""
+        if self.model is None:
+            return {}
+        try:
+            evals_result = self.model.evals_result()
+        except Exception:
+            return {}
+
+        train_mae = evals_result.get("validation_0", {}).get("mae", [])
+        val_mae = evals_result.get("validation_1", {}).get("mae", [])
+        return {
+            "train_mae": [float(v) for v in train_mae],
+            "val_mae": [float(v) for v in val_mae],
+        }
     
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Make predictions"""
@@ -288,11 +321,20 @@ class XGBoostRegressor:
 class MultiModelRegressor:
     """Wrapper to train and compare multiple regression models"""
     
-    def __init__(self, input_size: int, sequence_length: int = 60):
+    def __init__(
+        self,
+        input_size: int,
+        sequence_length: int = 60,
+        random_seed: int = 42,
+        device: torch.device | str | None = None,
+    ):
         self.input_size = input_size
         self.sequence_length = sequence_length
+        self.random_seed = random_seed
         # Device selection: CUDA > MPS (Apple Silicon) > CPU
-        if torch.cuda.is_available():
+        if device is not None:
+            self.device = torch.device(device)
+        elif torch.cuda.is_available():
             self.device = torch.device('cuda')
         elif torch.backends.mps.is_available():
             self.device = torch.device('mps')
@@ -305,51 +347,91 @@ class MultiModelRegressor:
             'LSTM': LSTMRegressor(input_size).to(self.device),
             'GRU': GRURegressor(input_size).to(self.device),
             'Transformer': TransformerRegressor(input_size).to(self.device),
-            'XGBoost': XGBoostRegressor()
+            'XGBoost': XGBoostRegressor(random_state=random_seed)
         }
         
         self.trained = {name: False for name in self.models}
         self.metrics = {}
     
     def train_pytorch_model(
-        self, 
-        model: nn.Module, 
-        X_train: np.ndarray, 
+        self,
+        model: nn.Module,
+        model_name: str,
+        X_train: np.ndarray,
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
-        epochs: int = 100,
-        batch_size: int = 32,
-        lr: float = 1e-3
+        epochs: int = TRAINING_CONFIG['epochs'],
+        batch_size: int = TRAINING_CONFIG['batch_size'],
+        lr: float = TRAINING_CONFIG['learning_rate'],
+        return_scaler=None,
+        val_close_prices: np.ndarray = None,
+        checkpoint_dir: Path = None,
     ) -> dict:
-        """Train a PyTorch model for the full configured epoch count."""
+        """Train a PyTorch baseline for the configured epochs with ReduceLROnPlateau.
+
+        Val MAE is computed in dollar space when return_scaler and val_close_prices
+        are provided; otherwise it falls back to scaled-return MAE.
+        """
         from torch.utils.data import TensorDataset, DataLoader
-        
-        # Convert to tensors
+
         X_train_t = torch.FloatTensor(X_train).to(self.device)
         y_train_t = torch.FloatTensor(y_train).to(self.device)
         X_val_t = torch.FloatTensor(X_val).to(self.device)
         y_val_t = torch.FloatTensor(y_val).to(self.device)
-        
+
         train_dataset = TensorDataset(X_train_t, y_train_t)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
-        criterion = nn.SmoothL1Loss()  # Huber loss - matches the fusion model
-        
-        # OneCycleLR for baselines too
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer, max_lr=lr * 10, epochs=epochs, steps_per_epoch=len(train_loader)
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(self.random_seed)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            generator=generator,
         )
-        
-        best_val_loss = float('inf')
-        history = {'train_loss': [], 'val_loss': []}
-        
-        print(f"  {'Epoch':<8} {'Train Loss':<15} {'Val Loss':<15} {'Status'}")
-        print(f"  {'-'*50}")
-        
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
+        criterion = nn.SmoothL1Loss()
+
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=TRAINING_CONFIG['lr_factor'],
+            patience=TRAINING_CONFIG['lr_patience'],
+        )
+
+        best_val_mae = float('inf')
+        best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        history = {'train_loss': [], 'val_loss': [], 'val_mae': [], 'lr': []}
+
+        def _val_mae_dollars():
+            model.eval()
+            with torch.no_grad():
+                pred_scaled = model(X_val_t).cpu().numpy()
+            if return_scaler is not None:
+                pred_returns = return_scaler.inverse_transform(pred_scaled.reshape(-1, 1)).flatten()
+                actual_returns = return_scaler.inverse_transform(y_val.reshape(-1, 1)).flatten()
+            else:
+                pred_returns = pred_scaled
+                actual_returns = y_val
+            if val_close_prices is not None:
+                pred_prices = val_close_prices * (1 + pred_returns)
+                actual_prices = val_close_prices * (1 + actual_returns)
+                return float(np.mean(np.abs(pred_prices - actual_prices))), float(
+                    np.mean((pred_returns - actual_returns) ** 2)
+                ) ** 0.5
+            return float(np.mean(np.abs(pred_returns - actual_returns))), None
+
+        def _val_loss():
+            model.eval()
+            with torch.no_grad():
+                pred = model(X_val_t)
+                return float(criterion(pred, y_val_t).item())
+
+        print(f"  {'Epoch':<8} {'Train Loss':<15} {'Val Loss':<15} {'Val MAE':<15} {'LR':<12} {'Status'}")
+        print(f"  {'-' * 78}")
+
         for epoch in range(epochs):
-            # Training
             model.train()
             train_loss = 0
             for X_batch, y_batch in train_loader:
@@ -359,33 +441,45 @@ class MultiModelRegressor:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
-                scheduler.step()
                 train_loss += loss.item()
-            
             train_loss /= len(train_loader)
-            
-            # Validation
-            model.eval()
-            with torch.no_grad():
-                val_predictions = model(X_val_t)
-                val_loss = criterion(val_predictions, y_val_t).item()
-            
+
+            val_loss = _val_loss()
+            val_mae, _ = _val_mae_dollars()
+            current_lr = optimizer.param_groups[0]['lr']
+            scheduler.step(val_mae)
+
             history['train_loss'].append(train_loss)
             history['val_loss'].append(val_loss)
-            
-            # Check for improvement
+            history['val_mae'].append(val_mae)
+            history['lr'].append(current_lr)
+
+            improved = val_mae < best_val_mae
             status = ""
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            if improved:
+                best_val_mae = val_mae
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
                 status = "Best"
-            
-            # Print progress every 10 epochs or first/last
+
             if epoch % 10 == 0 or epoch == epochs - 1 or status:
-                print(f"  {epoch+1:<8} {train_loss:<15.6f} {val_loss:<15.6f} {status}")
-        
-        print(f"  {'-'*50}")
-        print(f"  Best Val Loss: {best_val_loss:.6f}")
-        
+                mae_str = f"${val_mae:.2f}" if val_close_prices is not None else f"{val_mae:.6f}"
+                print(f"  {epoch+1:<8} {train_loss:<15.6f} {val_loss:<15.6f} {mae_str:<15} {current_lr:<12.2e} {status}")
+
+        # Restore best weights
+        model.load_state_dict(best_state)
+
+        # Persist best checkpoint
+        if checkpoint_dir is not None:
+            checkpoint_dir = Path(checkpoint_dir)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(best_state, checkpoint_dir / f'{model_name.lower()}_best.pt')
+
+        print(f"  {'-' * 78}")
+        if val_close_prices is not None:
+            print(f"  Best Val MAE: ${best_val_mae:.2f}")
+        else:
+            print(f"  Best Val MAE: {best_val_mae:.6f}")
+
         return history
     
     def train_all(
@@ -394,79 +488,124 @@ class MultiModelRegressor:
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
-        epochs: int = 100,
-        plot_history: bool = True
+        epochs: int = TRAINING_CONFIG['epochs'],
+        plot_history: bool = True,
+        return_scaler=None,
+        val_close_prices: np.ndarray = None,
+        checkpoint_dir: Path = None,
     ):
-        """Train all models"""
+        """Train all baselines for the configured epochs."""
         self.histories = {}
-        
-        print("\n" + "="*60)
-        print("Training LSTM...")
-        print("="*60)
-        self.histories['LSTM'] = self.train_pytorch_model(
-            self.models['LSTM'], X_train, y_train, X_val, y_val, epochs
-        )
-        self.trained['LSTM'] = True
-        
-        print("\n" + "="*60)
-        print("Training GRU...")
-        print("="*60)
-        self.histories['GRU'] = self.train_pytorch_model(
-            self.models['GRU'], X_train, y_train, X_val, y_val, epochs
-        )
-        self.trained['GRU'] = True
-        
-        print("\n" + "="*60)
-        print("Training Transformer...")
-        print("="*60)
-        self.histories['Transformer'] = self.train_pytorch_model(
-            self.models['Transformer'], X_train, y_train, X_val, y_val, epochs
-        )
-        self.trained['Transformer'] = True
-        
-        print("\n" + "="*60)
+
+        for name in ['LSTM', 'GRU', 'Transformer']:
+            print("\n" + "=" * 60)
+            print(f"Training {name}...")
+            print("=" * 60)
+            self.histories[name] = self.train_pytorch_model(
+                self.models[name],
+                model_name=name,
+                X_train=X_train,
+                y_train=y_train,
+                X_val=X_val,
+                y_val=y_val,
+                epochs=epochs,
+                return_scaler=return_scaler,
+                val_close_prices=val_close_prices,
+                checkpoint_dir=checkpoint_dir,
+            )
+            self.trained[name] = True
+
+        print("\n" + "=" * 60)
         print("Training XGBoost...")
-        print("="*60)
-        self.models['XGBoost'].fit(X_train, y_train)
+        print("=" * 60)
+        self.models['XGBoost'].fit(X_train, y_train, X_val=X_val, y_val=y_val)
         self.trained['XGBoost'] = True
-        print("  XGBoost training complete (no epochs - gradient boosting)")
-        
+        print("  XGBoost training complete")
+
         print("\nAll models trained!")
-        
-        # Plot training history
+
         if plot_history:
             self.plot_training_history()
     
-    def plot_training_history(self):
-        """Plot training and validation loss curves"""
+    def plot_training_history(self, save_path=None):
+        """Plot per-model training curves.
+
+        PyTorch models (LSTM/GRU/Transformer) put train/val loss (scaled SmoothL1) on
+        the left axis and val MAE ($) on a twin right axis, since the two
+        quantities differ by several orders of magnitude. XGBoost reports MAE on
+        scaled returns for both train and val on a single axis.
+        """
         import matplotlib.pyplot as plt
-        
+
+        if not self.histories:
+            print("No training histories to plot.")
+            return
+
         n_models = len(self.histories)
         fig, axes = plt.subplots(1, n_models, figsize=(6 * n_models, 5))
         if n_models == 1:
             axes = [axes]
-        
+
         for idx, (name, history) in enumerate(self.histories.items()):
             ax = axes[idx]
-            epochs = range(1, len(history['train_loss']) + 1)
-            
-            ax.plot(epochs, history['train_loss'], 'b-', label='Train Loss', linewidth=2)
-            ax.plot(epochs, history['val_loss'], 'r-', label='Val Loss', linewidth=2)
+
+            if name == 'XGBoost':
+                train_mae = history.get('train_mae', [])
+                val_mae = history.get('val_mae', [])
+                epochs = range(1, max(len(train_mae), len(val_mae)) + 1)
+                if train_mae:
+                    ax.plot(range(1, len(train_mae) + 1), train_mae, 'b-',
+                            label='Train MAE (scaled return)', linewidth=2)
+                if val_mae:
+                    ax.plot(range(1, len(val_mae) + 1), val_mae, 'r-',
+                            label='Val MAE (scaled return)', linewidth=2)
+                ax.set_ylabel('MAE (scaled return)')
+                if val_mae:
+                    best_epoch = int(np.argmin(val_mae)) + 1
+                    best_val = float(np.min(val_mae))
+                    ax.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.7)
+                    ax.scatter([best_epoch], [best_val], color='g', s=100, zorder=5,
+                               label=f'Best: Epoch {best_epoch}')
+                ax.legend(loc='best')
+            else:
+                train_loss = history.get('train_loss', [])
+                val_loss = history.get('val_loss', [])
+                val_mae = history.get('val_mae', [])
+                epochs = range(1, len(train_loss) + 1)
+
+                ax.plot(epochs, train_loss, 'b-', label='Train Loss (scaled SmoothL1)', linewidth=2)
+                if val_loss:
+                    ax.plot(range(1, len(val_loss) + 1), val_loss, 'b--',
+                            label='Val Loss (scaled SmoothL1)', linewidth=1.5, alpha=0.7)
+                ax.set_ylabel('Loss (scaled SmoothL1)', color='b')
+                ax.tick_params(axis='y', labelcolor='b')
+
+                ax2 = ax.twinx()
+                ax2.plot(range(1, len(val_mae) + 1), val_mae, 'r-',
+                         label='Val MAE ($)', linewidth=2)
+                ax2.set_ylabel('Val MAE ($)', color='r')
+                ax2.tick_params(axis='y', labelcolor='r')
+
+                if val_mae:
+                    best_epoch = int(np.argmin(val_mae)) + 1
+                    best_val = float(np.min(val_mae))
+                    ax.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.7)
+                    ax2.scatter([best_epoch], [best_val], color='g', s=100, zorder=5)
+
+                lines1, labels1 = ax.get_legend_handles_labels()
+                lines2, labels2 = ax2.get_legend_handles_labels()
+                ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+
             ax.set_title(f'{name} Training History', fontsize=14)
             ax.set_xlabel('Epoch')
-            ax.set_ylabel('Loss (Huber)')
-            ax.legend()
             ax.grid(True, alpha=0.3)
-            
-            # Mark best epoch
-            best_epoch = np.argmin(history['val_loss']) + 1
-            best_val = min(history['val_loss'])
-            ax.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.7, label=f'Best: Epoch {best_epoch}')
-            ax.scatter([best_epoch], [best_val], color='g', s=100, zorder=5)
-        
+
         plt.tight_layout()
-        plt.savefig('training_history.png', dpi=150)
-        print("\nTraining history plot saved to 'training_history.png'")
+        out_path = Path(save_path) if save_path is not None else Path('training_history.png')
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"\nTraining history plot saved to '{out_path}'")
     
     def evaluate_all(
         self,
@@ -526,17 +665,11 @@ class MultiModelRegressor:
                 pred_prices = pred_returns
                 actual_prices = actual_returns
             
-            # Directional accuracy: did we predict the right direction?
-            actual_direction = np.sign(actual_returns)
-            pred_direction = np.sign(pred_returns)
-            dir_acc = np.mean(actual_direction == pred_direction) * 100
-            
             results[name] = {
                 'MSE': mse,
                 'RMSE': rmse,
                 'MAE': mae,
                 'MAPE': mape,
-                'Directional_Accuracy': dir_acc,
                 'predictions': pred_prices,
                 'pred_returns': pred_returns,
                 'predictions_scaled': predictions_scaled
@@ -596,17 +729,16 @@ class MultiModelRegressor:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save PyTorch models
+        # Save PyTorch models (best-val-MAE state)
         for name in ['LSTM', 'GRU', 'Transformer']:
             if self.trained[name]:
                 torch.save(
                     self.models[name].state_dict(),
-                    save_dir / f'{name.lower()}_regressor.pt'
+                    save_dir / f'{name.lower()}_best.pt'
                 )
-        
-        # Save XGBoost model
+
         if self.trained['XGBoost']:
-            joblib.dump(self.models['XGBoost'].model, save_dir / 'xgboost_regressor.pkl')
+            joblib.dump(self.models['XGBoost'].model, save_dir / 'xgboost_best.pkl')
         
         # Save metadata
         joblib.dump({
@@ -646,22 +778,20 @@ class MultiModelRegressor:
             'XGBoost': XGBoostRegressor()
         }
         
-        # Load PyTorch models
         for name in ['LSTM', 'GRU', 'Transformer']:
             if self.trained.get(name, False):
-                model_path = save_dir / f'{name.lower()}_regressor.pt'
+                model_path = save_dir / f'{name.lower()}_best.pt'
                 if model_path.exists():
                     self.models[name].load_state_dict(
                         torch.load(model_path, map_location=self.device)
                     )
                     self.models[name].eval()
-        
+
         if not load_xgboost:
             self.trained['XGBoost'] = False
 
-        # Load XGBoost model
         if load_xgboost and self.trained.get('XGBoost', False):
-            xgb_path = save_dir / 'xgboost_regressor.pkl'
+            xgb_path = save_dir / 'xgboost_best.pkl'
             if xgb_path.exists():
                 self.models['XGBoost'].model = joblib.load(xgb_path)
         
@@ -671,7 +801,7 @@ class MultiModelRegressor:
 if __name__ == "__main__":
     # Test the models
     batch_size = 32
-    seq_len = 60
+    seq_len = 30
     input_size = 50
     
     # Test LSTM

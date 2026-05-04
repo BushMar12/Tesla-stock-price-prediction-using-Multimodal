@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git config *)",
+      "Bash(grep -E '\\\\.\\(pt|pkl|csv\\)$')",
+      "Bash(python -m py_compile \"src/models/regression_models.py\" \"model_comparison.py\")",
+      "Bash(python -m py_compile src/data/preprocessing.py)",
+      "Bash(python -c \"from src.data.preprocessing import DataPreprocessor; print\\('import OK'\\)\")",
+      "Bash(python *)",
+      "Bash(tee models/seed_sweep_run.log)",
+      "Bash(pip install *)"
+    ]
+  }
+}

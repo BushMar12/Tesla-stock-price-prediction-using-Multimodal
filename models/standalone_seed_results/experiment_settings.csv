@@ -1,0 +1,2 @@
+seeds,epochs,configs,sentiment_source,deterministic_training,save_models
+42 43 44 45 46,50,technical technical_sentiment,alpha_vantage,True,False

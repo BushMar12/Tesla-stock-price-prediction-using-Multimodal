@@ -1,0 +1,2 @@
+random_seed,deterministic_training,batch_size,learning_rate,epochs,train_split,val_split,test_split
+42,True,32,0.0001,50,0.8,0.1,0.1

@@ -9,23 +9,10 @@ import sys
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from config import (
-    DIRECTION_RETURN_THRESHOLD,
     MARKET_CONTEXT_CACHE,
     RAW_DATA_DIR,
     USE_MARKET_CONTEXT,
 )
-
-
-def classify_direction_by_return(returns: pd.Series, threshold: float = DIRECTION_RETURN_THRESHOLD) -> pd.Series:
-    """Classify returns as 0=Down, 1=Neutral, 2=Up using a symmetric threshold."""
-    return pd.Series(
-        np.select(
-            [returns < -threshold, returns > threshold],
-            [0, 2],
-            default=1
-        ),
-        index=returns.index
-    ).astype(int)
 
 
 def add_moving_averages(df: pd.DataFrame) -> pd.DataFrame:
@@ -38,6 +25,13 @@ def add_moving_averages(df: pd.DataFrame) -> pd.DataFrame:
     for period in [12, 26, 50]:
         df[f'EMA_{period}'] = df['close'].ewm(span=period, adjust=False).mean()
     
+    return df
+
+
+def add_selected_moving_averages(df: pd.DataFrame) -> pd.DataFrame:
+    """Add the simple moving averages used by the current compact feature set."""
+    for period in [20, 50]:
+        df[f'SMA_{period}'] = df['close'].rolling(window=period).mean()
     return df
 
 
@@ -169,41 +163,9 @@ def add_price_patterns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_target_variables(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
-    """Add target variables for prediction (single-horizon, backward compat)"""
-    # Future price (regression target)
+    """Add next-day price and return targets."""
     df['Target_Price'] = df['close'].shift(-horizon)
-    
-    # Future return (for scaling)
     df['Target_Return'] = df['close'].pct_change(periods=horizon).shift(-horizon)
-    
-    # Direction classification: 0 = Down, 1 = Neutral, 2 = Up
-    df['Target_Direction'] = classify_direction_by_return(df['Target_Return'])
-    
-    return df
-
-
-def add_multi_day_targets(df: pd.DataFrame, horizons: list = None) -> pd.DataFrame:
-    """Add target returns for multiple prediction horizons.
-    
-    Args:
-        df: DataFrame with OHLCV data
-        horizons: List of prediction horizons in days (e.g. [1, 3, 5, 7])
-    
-    Returns:
-        DataFrame with Target_Return_Xd columns and Target_Direction (1-day)
-    """
-    from config import PREDICTION_HORIZONS
-    if horizons is None:
-        horizons = PREDICTION_HORIZONS
-    
-    for h in horizons:
-        df[f'Target_Return_{h}d'] = df['close'].pct_change(periods=h).shift(-h)
-
-    # Keep legacy columns pointing to 1-day horizon for backward compat
-    df['Target_Return'] = df[f'Target_Return_{horizons[0]}d']
-    df['Target_Price'] = df['close'].shift(-horizons[0])
-    df['Target_Direction'] = classify_direction_by_return(df['Target_Return'])
-    
     return df
 
 
@@ -328,27 +290,16 @@ def calculate_all_indicators(df: pd.DataFrame, add_targets: bool = True) -> pd.D
     
     df = df.copy()
     
-    # Add all indicators
-    df = add_moving_averages(df)
+    # Current compact feature set: OHLCV + MA + RSI14 + Bollinger Bands.
+    df = add_selected_moving_averages(df)
     df = add_rsi(df)
-    df = add_macd(df)
     df = add_bollinger_bands(df)
-    df = add_atr(df)
-    df = add_obv(df)
-    df = add_vwap(df)
-    df = add_stochastic(df)
-    df = add_momentum_features(df)
-    df = add_volatility_features(df)
-    df = add_price_patterns(df)
-    
-    # New: market context and calendar features
-    df = add_market_context(df)
-    df = add_calendar_features(df)
     
     if add_targets:
-        df = add_multi_day_targets(df)
+        df = add_target_variables(df)
     
     print(f"Added {len(df.columns)} features")
+    print(f"Current features: {df.columns.tolist()}")
     
     return df
 

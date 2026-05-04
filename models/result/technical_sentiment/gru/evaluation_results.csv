@@ -1,0 +1,2 @@
+Configuration,Model,RMSE,MAE,MAPE,MSE,Random Seed,Deterministic Training
+technical_sentiment,GRU,11.036579888357393,8.935596195870607,2.1218755844168102,121.8060956320949,42,True

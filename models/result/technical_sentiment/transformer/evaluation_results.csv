@@ -1,0 +1,2 @@
+Configuration,Model,RMSE,MAE,MAPE,MSE,Random Seed,Deterministic Training
+technical_sentiment,Transformer,11.014863304011795,8.921144058106735,2.1182446040810787,121.32721360606565,42,True

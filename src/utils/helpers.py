@@ -9,17 +9,16 @@ import joblib
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from config import MODELS_DIR
+from config import MODELS_DIR, MODEL_VERSION
 
 
 def load_trained_model(model_path: str = None):
-    """Load a trained model from checkpoint"""
+    """Load a trained next-day fusion model from checkpoint."""
     from src.models.fusion import create_model
-    
+
     if model_path is None:
         model_path = MODELS_DIR / 'best_model.pt'
-    
-    # Load metadata
+
     metadata_path = MODELS_DIR / 'preprocessing_metadata.pkl'
     if metadata_path.exists():
         metadata = joblib.load(metadata_path)
@@ -28,20 +27,26 @@ def load_trained_model(model_path: str = None):
         use_cross_attention = metadata.get('use_cross_attention', True)
     else:
         raise FileNotFoundError("Preprocessing metadata not found. Please train the model first.")
-    
-    # Create model
+
     model = create_model(
         ts_input_size=ts_input_size,
         sentiment_input_size=sentiment_input_size,
-        use_cross_attention=use_cross_attention
+        use_cross_attention=use_cross_attention,
     )
-    
-    # Load weights
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     checkpoint = torch.load(model_path, map_location=device)
+
+    version = checkpoint.get('model_version')
+    if version != MODEL_VERSION:
+        raise RuntimeError(
+            f"Checkpoint at {model_path} has model_version={version!r}, "
+            f"expected {MODEL_VERSION!r}. Retrain required."
+        )
+
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    
+
     return model, metadata
 
 

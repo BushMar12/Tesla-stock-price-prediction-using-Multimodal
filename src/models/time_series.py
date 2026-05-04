@@ -1,9 +1,10 @@
 """
-Time-series encoder using LSTM/GRU with attention
+Time-series encoders for stock sequence features.
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from pathlib import Path
 import sys
 
@@ -12,7 +13,7 @@ from config import MODEL_CONFIG
 
 
 class Attention(nn.Module):
-    """Attention mechanism for sequence models"""
+    """Attention pooling mechanism for sequence models."""
     
     def __init__(self, hidden_size: int, bidirectional: bool = True):
         super().__init__()
@@ -24,30 +25,51 @@ class Attention(nn.Module):
             nn.Linear(self.hidden_size // 2, 1)
         )
     
-    def forward(self, lstm_output: torch.Tensor) -> tuple:
+    def forward(self, sequence_output: torch.Tensor) -> tuple:
         """
-        Apply attention to LSTM output.
+        Apply attention pooling to sequence output.
         
         Args:
-            lstm_output: (batch, seq_len, hidden_size)
+            sequence_output: (batch, seq_len, hidden_size)
         
         Returns:
             context: (batch, hidden_size)
             attention_weights: (batch, seq_len)
         """
         # Calculate attention weights
-        attention_scores = self.attention(lstm_output)  # (batch, seq_len, 1)
+        attention_scores = self.attention(sequence_output)  # (batch, seq_len, 1)
         attention_weights = F.softmax(attention_scores, dim=1)  # (batch, seq_len, 1)
         
         # Apply attention weights
-        context = torch.sum(attention_weights * lstm_output, dim=1)  # (batch, hidden_size)
+        context = torch.sum(attention_weights * sequence_output, dim=1)  # (batch, hidden_size)
         
         return context, attention_weights.squeeze(-1)
 
 
+class PositionalEncoding(nn.Module):
+    """Sinusoidal positional encoding for Transformer sequence models."""
+
+    def __init__(self, d_model: int, max_len: int = 500, dropout: float = 0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe.unsqueeze(0))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.pe[:, :x.size(1), :]
+        return self.dropout(x)
+
+
 class TimeSeriesEncoder(nn.Module):
     """
-    LSTM-based encoder for time-series data with attention.
+    Transformer-based encoder for time-series data with attention pooling.
     """
     
     def __init__(
@@ -65,33 +87,55 @@ class TimeSeriesEncoder(nn.Module):
         self.num_layers = num_layers
         self.bidirectional = bidirectional
         self.num_directions = 2 if bidirectional else 1
+        self.output_size = hidden_size * self.num_directions
         
         # Input projection
         self.input_projection = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
-            nn.LayerNorm(hidden_size),
+            nn.Linear(input_size, self.output_size),
+            nn.LayerNorm(self.output_size),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
         
-        # LSTM layers
-        self.lstm = nn.LSTM(
-            input_size=hidden_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
+        self.pos_encoding = PositionalEncoding(
+            d_model=self.output_size,
+            max_len=500,
+            dropout=dropout
+        )
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.output_size,
+            nhead=4,
+            dim_feedforward=self.output_size * 2,
+            dropout=dropout,
             batch_first=True,
-            dropout=dropout if num_layers > 1 else 0,
-            bidirectional=bidirectional
+            activation="gelu"
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers
         )
         
         # Attention layer
         self.attention = Attention(hidden_size, bidirectional)
         
-        # Output size
-        self.output_size = hidden_size * self.num_directions
-        
         # Layer normalization
         self.layer_norm = nn.LayerNorm(self.output_size)
+
+    def encode_sequence(self, x: torch.Tensor) -> torch.Tensor:
+        """Return the full encoded sequence for cross-modal attention."""
+        x = self.input_projection(x)
+        x = self.pos_encoding(x)
+        return self.transformer(x)
+
+    def encode_with_attention(self, x: torch.Tensor) -> tuple:
+        """
+        Return pooled output, attention weights, and the full encoded sequence.
+        """
+        sequence_out = self.encode_sequence(x)
+        context, attention_weights = self.attention(sequence_out)
+        output = self.layer_norm(context)
+        return output, attention_weights, sequence_out
     
     def forward(self, x: torch.Tensor) -> tuple:
         """
@@ -104,17 +148,7 @@ class TimeSeriesEncoder(nn.Module):
             output: Encoded representation (batch, output_size)
             attention_weights: Attention weights (batch, seq_len)
         """
-        # Project input
-        x = self.input_projection(x)  # (batch, seq_len, hidden_size)
-        
-        # LSTM
-        lstm_out, (h_n, c_n) = self.lstm(x)  # lstm_out: (batch, seq_len, hidden*directions)
-        
-        # Apply attention
-        context, attention_weights = self.attention(lstm_out)
-        
-        # Layer normalization
-        output = self.layer_norm(context)
+        output, attention_weights, _ = self.encode_with_attention(x)
         
         return output, attention_weights
 
@@ -187,7 +221,7 @@ class GRUEncoder(nn.Module):
 if __name__ == "__main__":
     # Test the encoder
     batch_size = 32
-    seq_len = 60
+    seq_len = 20
     input_size = 50
     
     model = TimeSeriesEncoder(input_size=input_size)

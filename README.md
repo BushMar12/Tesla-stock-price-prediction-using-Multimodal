@@ -20,14 +20,17 @@ Key defaults in `config.py`:
 
 ```python
 STOCK_SYMBOL = "TSLA"
-START_DATE = "2021-01-01"
+START_DATE = "2021-01-06"
+END_DATE = "2026-04-29"
 SEQUENCE_LENGTH = 60
 PREDICTION_HORIZON = 1
+RANDOM_SEED = 42
+DETERMINISTIC_TRAINING = True
 
 TRAINING_CONFIG = {
     "batch_size": 32,
     "learning_rate": 1e-4,
-    "epochs": 100,
+    "epochs": 50,
     "train_split": 0.8,
     "val_split": 0.1,
     "test_split": 0.1,

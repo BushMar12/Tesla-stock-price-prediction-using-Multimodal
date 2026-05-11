@@ -17,8 +17,8 @@ for dir_path in [RAW_DATA_DIR, PROCESSED_DATA_DIR, MODELS_DIR]:
 
 # Stock settings
 STOCK_SYMBOL = "TSLA"
-START_DATE = "2021-01-01"
-END_DATE = "2026-04-21"  # None means today
+START_DATE = "2021-01-06"
+END_DATE = "2026-04-29"  # None means today
 
 # Feature settings
 SEQUENCE_LENGTH = 60  # Number of days to look back
